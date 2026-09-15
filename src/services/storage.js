@@ -10,6 +10,8 @@ const STORAGE_KEYS = {
   LAST_OPENSEA_URL: 'opensea_bot_last_url',
   TARGET_QTY: 'opensea_bot_target_qty',
   ACTIVE_WALLETS_COUNT: 'opensea_bot_active_wallets_count',
+  EXECUTION_MODE: 'opensea_bot_execution_mode',
+  LATENCY_OFFSET: 'opensea_bot_latency_offset',
 };
 
 export const StorageService = {
@@ -36,7 +38,7 @@ export const StorageService = {
     return val ? parseInt(val, 10) : 5;
   },
 
-  // Number of active wallets to use for auto-mint (e.g. 1 wallet, 3 wallets, or all)
+  // Number of active wallets to use for auto-mint
   saveActiveWalletsCount(count) {
     localStorage.setItem(STORAGE_KEYS.ACTIVE_WALLETS_COUNT, String(count));
   },
@@ -46,7 +48,26 @@ export const StorageService = {
     return val ? parseInt(val, 10) : null;
   },
 
-  // Manually Imported Custom Private Keys (Array of { key: string, label: string })
+  // Execution Mode (parallel vs sequential)
+  saveExecutionMode(mode) {
+    localStorage.setItem(STORAGE_KEYS.EXECUTION_MODE, mode);
+  },
+
+  getExecutionMode() {
+    return localStorage.getItem(STORAGE_KEYS.EXECUTION_MODE) || 'parallel';
+  },
+
+  // Latency offset / Lead time in ms
+  saveLatencyOffset(offsetMs) {
+    localStorage.setItem(STORAGE_KEYS.LATENCY_OFFSET, String(offsetMs));
+  },
+
+  getLatencyOffset() {
+    const val = localStorage.getItem(STORAGE_KEYS.LATENCY_OFFSET);
+    return val !== null ? parseInt(val, 10) : 15;
+  },
+
+  // Manually Imported Custom Private Keys
   saveCustomPrivateKeys(keysArray) {
     localStorage.setItem(STORAGE_KEYS.CUSTOM_KEYS, JSON.stringify(keysArray));
   },
@@ -111,13 +132,13 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.GAS_CONFIG);
       return data ? JSON.parse(data) : {
-        maxFeeGwei: '30',
-        maxPriorityFeeGwei: '2.5',
-        gasLimit: '200000',
+        maxFeeGwei: '35',
+        maxPriorityFeeGwei: '3.0',
+        gasLimit: '250000',
         autoSpeed: 'ultra',
       };
     } catch (e) {
-      return { maxFeeGwei: '30', maxPriorityFeeGwei: '2.5', gasLimit: '200000', autoSpeed: 'ultra' };
+      return { maxFeeGwei: '35', maxPriorityFeeGwei: '3.0', gasLimit: '250000', autoSpeed: 'ultra' };
     }
   }
 };

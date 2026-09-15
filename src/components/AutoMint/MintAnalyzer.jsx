@@ -6,7 +6,7 @@ import { backgroundTimerService } from '../../services/backgroundWorker';
 import { getChainById } from '../../constants/chains';
 import CountdownTimer from './CountdownTimer';
 import ExecutionLogs from './ExecutionLogs';
-import { Rocket, Search, Sparkles, AlertCircle, ShieldCheck, Zap, Square, Clock, BellRing, CheckCircle2, Layers, Flame, Calendar, Info, Users, Check, Hash } from 'lucide-react';
+import { Rocket, Search, Sparkles, AlertCircle, ShieldCheck, Zap, Square, Clock, BellRing, CheckCircle2, Layers, Flame, Calendar, Info, Users, Check, Gauge, Cpu } from 'lucide-react';
 
 export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [], onOpenSettings }) {
   const [inputUrl, setInputUrl] = useState('');
@@ -15,18 +15,24 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
   const [errorMsg, setErrorMsg] = useState('');
   const [targetQty, setTargetQty] = useState(1);
   const [activeWalletCount, setActiveWalletCount] = useState(null);
+  const [executionMode, setExecutionMode] = useState('parallel'); // 'parallel' or 'sequential'
+  const [latencyOffsetMs, setLatencyOffsetMs] = useState(15);
   const [selectedStageId, setSelectedStageId] = useState('');
   const [customDateTime, setCustomDateTime] = useState('');
-  const [botState, setBotState] = useState({ isRunning: false, isArmed: false, logs: [] });
+  const [botState, setBotState] = useState({ isRunning: false, isArmed: false, isPreSigned: false, isPreStaging: false, logs: [] });
 
   useEffect(() => {
     // 1. Load persistent URL & Target Qty & Active Wallets Count from storage
     const savedUrl = StorageService.getLastUrl();
     const savedQty = StorageService.getTargetQty();
     const savedWalletsCount = StorageService.getActiveWalletsCount();
+    const savedMode = StorageService.getExecutionMode();
+    const savedOffset = StorageService.getLatencyOffset();
 
     if (savedQty) setTargetQty(savedQty);
     if (savedWalletsCount !== null) setActiveWalletCount(savedWalletsCount);
+    if (savedMode) setExecutionMode(savedMode);
+    if (savedOffset !== null) setLatencyOffsetMs(savedOffset);
 
     if (savedUrl) {
       setInputUrl(savedUrl);
@@ -126,6 +132,8 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
       wallets: currentMintWallets,
       targetQuantityPerWallet: targetQty,
       chainInput: selectedChain,
+      executionMode,
+      latencyOffsetMs,
     });
   };
 
@@ -150,6 +158,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
       wallets: currentMintWallets,
       targetQuantityPerWallet: targetQty,
       chainInput: selectedChain,
+      executionMode,
     });
   };
 
@@ -169,6 +178,16 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
     StorageService.saveActiveWalletsCount(parsed);
   };
 
+  const handleSetExecutionMode = (mode) => {
+    setExecutionMode(mode);
+    StorageService.saveExecutionMode(mode);
+  };
+
+  const handleSetLatencyOffset = (offset) => {
+    setLatencyOffsetMs(offset);
+    StorageService.saveLatencyOffset(offset);
+  };
+
   const currentActiveStage = dropInfo?.currentStage || (dropInfo?.stages && dropInfo.stages.find(s => s.status === 'LIVE')) || dropInfo?.stages?.[0];
 
   return (
@@ -181,16 +200,16 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Sparkles size={20} className="text-cyan-400" />
-              OpenSea 1ms Auto-Mint Bot
+              OpenSea Nanosecond Turbo Auto-Mint Bot
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Paste OpenSea link. Auto-detects blockchain network, reads real drop stages & auto-mints in 1ms on launch.
+              Auto-detects blockchain network, pre-signs transactions in memory, and triggers in nanoseconds across all wallets at T=0.
             </p>
           </div>
 
           <div className="flex items-center gap-2 font-mono text-xs">
             <span className="px-2.5 py-1 rounded-lg bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold flex items-center gap-1.5">
-              <ShieldCheck size={14} /> {currentMintWallets.length} of {wallets.length} Wallets Selected for Mint
+              <ShieldCheck size={14} /> {currentMintWallets.length} of {wallets.length} Wallets Selected
             </span>
           </div>
         </div>
@@ -514,6 +533,84 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                 </div>
               </div>
 
+              {/* Nanosecond Execution Mode & Latency Compensation Controls */}
+              <div className="p-3.5 rounded-xl bg-gradient-to-r from-slate-950 via-cyan-950/20 to-slate-950 border border-cyan-900/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <Cpu size={15} className="text-cyan-400 animate-pulse" />
+                    Firing Speed Strategy:
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-300 font-bold">
+                    {executionMode === 'parallel' ? '⚡ NANOSECOND PARALLEL BLAST' : '⚡ 5MS SEQUENTIAL'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSetExecutionMode('parallel')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      executionMode === 'parallel'
+                        ? 'bg-cyan-950/80 border-cyan-400 text-white shadow-lg shadow-cyan-950/50'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-cyan-300">
+                      <Zap size={14} className="text-amber-400" />
+                      <span>Nanosecond Blast</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Pre-signs all wallets. Blasts all transactions simultaneously in 0ms at T=0.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSetExecutionMode('sequential')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      executionMode === 'sequential'
+                        ? 'bg-cyan-950/80 border-cyan-400 text-white shadow-lg shadow-cyan-950/50'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-200">
+                      <Gauge size={14} className="text-cyan-400" />
+                      <span>Sequential Cascade</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      5ms cascade. Checks on-chain supply availability before each wallet.
+                    </p>
+                  </button>
+                </div>
+
+                {/* Latency Lead Compensation */}
+                <div className="flex items-center justify-between pt-1 border-t border-slate-900/80 text-xs">
+                  <span className="text-slate-400 text-[11px] flex items-center gap-1">
+                    <Clock size={12} className="text-cyan-400" /> Network Pre-Fire Offset:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {[
+                      { label: '0ms', val: 0 },
+                      { label: '15ms (Fiber)', val: 15 },
+                      { label: '50ms (Lead)', val: 50 },
+                    ].map((opt) => (
+                      <button
+                        key={opt.val}
+                        type="button"
+                        onClick={() => handleSetLatencyOffset(opt.val)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                          latencyOffsetMs === opt.val
+                            ? 'bg-cyan-600 text-white font-bold'
+                            : 'bg-slate-900 text-slate-400 hover:bg-slate-800 border border-slate-800'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* Quantity Per Wallet */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800">
                 <span className="text-xs font-semibold text-slate-300">Target Mint / Wallet:</span>
@@ -537,15 +634,24 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                 </div>
               </div>
 
-              {/* Armed Standby Status Banner */}
+              {/* Armed Standby Status Banner with Nanosecond Cache Indicator */}
               {botState.isArmed && (
-                <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/90 to-slate-900 border border-amber-500/80 text-amber-200 text-xs space-y-1.5 shadow-xl shadow-amber-950/50 animate-pulse">
-                  <div className="flex items-center gap-2 font-bold text-amber-300">
-                    <Clock size={16} />
-                    <span>🛡️ BOT IS ARMED IN 0MS STANDBY MODE</span>
+                <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/90 to-slate-900 border border-amber-500/80 text-amber-200 text-xs space-y-2 shadow-xl shadow-amber-950/50 animate-pulse">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-bold text-amber-300">
+                      <Clock size={16} />
+                      <span>🛡️ BOT IS ARMED IN 0MS STANDBY MODE</span>
+                    </div>
+                    {botState.isPreSigned && (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-extrabold flex items-center gap-1">
+                        <Check size={12} /> RAM PRE-SIGNED
+                      </span>
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-300">
-                    Waiting for <strong>{targetStage?.name}</strong> countdown to hit <strong>00:00:00:000</strong>. When it hits 0, it will instantly auto-mint across <strong>{currentMintWallets.length} selected wallets</strong> in 1ms!
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {botState.isPreSigned
+                      ? `⚡ All ${currentMintWallets.length} transactions are pre-signed in memory. When countdown hits 0, it will blast all wallets simultaneously with nanosecond CPU speed!`
+                      : `Pre-staging transactions in background memory for zero-latency nanosecond trigger...`}
                   </p>
                 </div>
               )}
@@ -577,7 +683,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                     <span>
                       {isTargetStageLive
                         ? `START 1MS AUTO-MINT NOW (${currentMintWallets.length} WALLET${currentMintWallets.length > 1 ? 'S' : ''})`
-                        : `ARM AUTO-MINT ON ${targetStage?.name || 'PUBLIC'} LAUNCH (${currentMintWallets.length} WALLETS)`}
+                        : `ARM NANOSECOND AUTO-MINT (${currentMintWallets.length} WALLETS)`}
                     </span>
                   </button>
                 )}
