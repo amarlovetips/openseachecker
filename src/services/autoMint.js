@@ -18,6 +18,8 @@ export class AutoMintEngine {
     this.executionMode = 'parallel'; // 'parallel' (nanosecond blast) or 'sequential'
     this.latencyOffsetMs = 15; // Lead time compensation
     this.gasSpeed = 'high'; // 'slow' | 'normal' | 'high'
+    this.lastFeeData = null;
+    this.gasMonitorInterval = null;
     this.preSignedTxs = [];
     this.logs = [];
     this.listeners = new Set();
@@ -39,6 +41,38 @@ export class AutoMintEngine {
         }
       }
     });
+  }
+
+  startGasMonitor(provider) {
+    this.stopGasMonitor();
+    this.gasMonitorInterval = setInterval(async () => {
+      if (!this.isArmed || this.isRunning || !this.dropInfo) {
+        this.stopGasMonitor();
+        return;
+      }
+      try {
+        const feeData = await provider.getFeeData();
+        const raw = feeData?.gasPrice || feeData?.maxFeePerGas || 0n;
+        const currentGwei = parseFloat(ethers.formatUnits(raw, 'gwei'));
+        const lastRaw = this.lastFeeData ? (this.lastFeeData.gasPrice || this.lastFeeData.maxFeePerGas || 0n) : null;
+        const lastGwei = lastRaw ? parseFloat(ethers.formatUnits(lastRaw, 'gwei')) : null;
+
+        if (lastGwei !== null && Math.abs(currentGwei - lastGwei) / (lastGwei || 1) > 0.12) {
+          this.addLog('info', `🔄 [LIVE GAS SHIFT] On-chain gas moved ${lastGwei.toFixed(3)} → ${currentGwei.toFixed(3)} Gwei. Re-syncing RAM transactions...`);
+          this.lastFeeData = feeData;
+          this.preStageTransactions(true);
+        } else {
+          this.lastFeeData = feeData;
+        }
+      } catch (e) {}
+    }, 3500);
+  }
+
+  stopGasMonitor() {
+    if (this.gasMonitorInterval) {
+      clearInterval(this.gasMonitorInterval);
+      this.gasMonitorInterval = null;
+    }
   }
 
   subscribe(callback) {
@@ -80,53 +114,38 @@ export class AutoMintEngine {
   }
 
   /**
-   * Calculate dynamic gas parameters based on network feeData and chosen gasSpeed
-   * Guarantees top-of-block priority when gasSpeed is 'high'
+   * Calculate dynamic gas parameters based 100% on LIVE network feeData.
+   * Zero hardcoded Gwei presets. Adapts dynamically whether the chain is at 0.05 Gwei, 5 Gwei, or 50 Gwei.
    */
-  calculateGasParams(feeData, gasSpeed = 'high', customGasConfig = null) {
+  calculateGasParams(feeData, gasSpeed = 'high') {
     const speed = gasSpeed || this.gasSpeed || StorageService.getGasSpeed() || 'high';
-    const gasSettings = customGasConfig || this.gasConfig || StorageService.getGasConfig();
 
-    const userMaxFeeGwei = parseFloat(gasSettings?.maxFeeGwei) || 0;
-    const userPriorityGwei = parseFloat(gasSettings?.maxPriorityFeeGwei) || 0;
-
-    // Case 1: EIP-1559 network (feeData has maxFeePerGas or maxPriorityFeePerGas)
+    // Case 1: EIP-1559 network
     if (feeData && (feeData.maxFeePerGas != null || feeData.maxPriorityFeePerGas != null)) {
-      const netBaseOrMax = feeData.maxFeePerGas || ethers.parseUnits('25', 'gwei');
-      const netPriority = feeData.maxPriorityFeePerGas || ethers.parseUnits('1.5', 'gwei');
+      const netBase = feeData.maxFeePerGas || feeData.gasPrice || 1000000n;
+      const netPriority = feeData.maxPriorityFeePerGas != null && feeData.maxPriorityFeePerGas > 0n 
+        ? feeData.maxPriorityFeePerGas 
+        : (netBase * 5n) / 100n; // default 5% if chain reports 0 tip
 
       let tipWei;
       let maxFeeWei;
 
       if (speed === 'slow') {
-        // Slow: standard tip (min 1.0 Gwei), conservative 1.1x base fee
-        const minTip = ethers.parseUnits('1.0', 'gwei');
-        const calcTip = (netPriority * 9n) / 10n;
-        tipWei = calcTip > minTip ? calcTip : minTip;
-        maxFeeWei = (netBaseOrMax * 11n) / 10n + tipWei;
+        // Slow: 1.0x Live Network Fee (Standard base fee, live tip)
+        tipWei = netPriority;
+        if (tipWei === 0n) tipWei = 1n;
+        maxFeeWei = (netBase * 105n) / 100n + tipWei; // 1.05x base + live tip
       } else if (speed === 'normal') {
-        // Normal: 1.5x tip (min 3.0 Gwei), 1.4x base fee buffer
-        const minTip = ethers.parseUnits('3.0', 'gwei');
-        const calcTip = (netPriority * 15n) / 10n;
-        tipWei = calcTip > minTip ? calcTip : minTip;
-        maxFeeWei = (netBaseOrMax * 14n) / 10n + tipWei;
+        // Normal: +35% Dynamic Boost over live network fee
+        tipWei = (netPriority * 135n) / 100n;
+        if (tipWei === 0n) tipWei = 1n;
+        maxFeeWei = (netBase * 135n) / 100n + tipWei;
       } else {
-        // High / Fast (Sniper Speed): 3.0x tip (min 12.0 Gwei), 2.5x base fee buffer
-        // Guarantees immediate inclusion at top of next block even under severe gas wars
-        const minTip = ethers.parseUnits('12.0', 'gwei');
-        const calcTip = (netPriority * 30n) / 10n;
-        tipWei = calcTip > minTip ? calcTip : minTip;
-        maxFeeWei = (netBaseOrMax * 25n) / 10n + tipWei;
-      }
-
-      // If user provided a higher custom fee in settings, ensure we don't underbid
-      if (userPriorityGwei > 0) {
-        const userTipWei = ethers.parseUnits(String(userPriorityGwei), 'gwei');
-        if (userTipWei > tipWei) tipWei = userTipWei;
-      }
-      if (userMaxFeeGwei > 0) {
-        const userMaxWei = ethers.parseUnits(String(userMaxFeeGwei), 'gwei');
-        if (userMaxWei > maxFeeWei) maxFeeWei = userMaxWei;
+        // High / Fast (Sniper Priority): 2.5x of live base fee buffer + 2.5x of live priority tip
+        // If Robinhood is 5 Gwei, it bids 12.5 Gwei. If Robinhood is 30 Gwei, it bids 75 Gwei.
+        tipWei = (netPriority * 250n) / 100n;
+        if (tipWei === 0n) tipWei = 1n;
+        maxFeeWei = (netBase * 250n) / 100n + tipWei;
       }
 
       return {
@@ -135,25 +154,16 @@ export class AutoMintEngine {
       };
     }
 
-    // Case 2: Legacy / gasPrice network (or feeData without 1559)
-    let netGasPrice = feeData?.gasPrice;
-    if (!netGasPrice) {
-      const fallbackGwei = speed === 'slow' ? '25' : speed === 'normal' ? '45' : '90';
-      netGasPrice = ethers.parseUnits(fallbackGwei, 'gwei');
-    }
-
+    // Case 2: Legacy / gasPrice network
+    const netGasPrice = feeData?.gasPrice || 1000000000n;
     let finalGasPrice;
-    if (speed === 'slow') {
-      finalGasPrice = netGasPrice;
-    } else if (speed === 'normal') {
-      finalGasPrice = (netGasPrice * 13n) / 10n; // +30% boost
-    } else {
-      finalGasPrice = (netGasPrice * 22n) / 10n; // +120% boost (2.2x) for high speed
-    }
 
-    if (userMaxFeeGwei > 0) {
-      const userPriceWei = ethers.parseUnits(String(userMaxFeeGwei), 'gwei');
-      if (userPriceWei > finalGasPrice) finalGasPrice = userPriceWei;
+    if (speed === 'slow') {
+      finalGasPrice = netGasPrice; // 1.0x live network price
+    } else if (speed === 'normal') {
+      finalGasPrice = (netGasPrice * 130n) / 100n; // 1.3x live network price
+    } else {
+      finalGasPrice = (netGasPrice * 220n) / 100n; // 2.2x live network price
     }
 
     return {
@@ -189,11 +199,12 @@ export class AutoMintEngine {
     this.isPreSigned = false;
     this.preSignedTxs = [];
 
+    const provider = Web3Service.getProvider(this.selectedChain);
     backgroundTimerService.requestNotificationPermission();
 
     const now = Date.now();
     const startTime = dropInfo.startTime || 0;
-    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST (SNIPER TIP)' : (this.gasSpeed === 'normal' ? '⚡ NORMAL' : '🐢 SLOW');
+    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST (2.5x Dynamic Live Boost)' : (this.gasSpeed === 'normal' ? '⚡ NORMAL (+35% Boost)' : '🐢 SLOW (1.0x Live Network)');
 
     if (startTime > now) {
       const diffMs = startTime - now;
@@ -201,11 +212,14 @@ export class AutoMintEngine {
       const targetTimeStr = new Date(startTime).toLocaleTimeString();
 
       this.addLog('warning', `🛡️ [ARMED IN 0MS STANDBY] Target Launch: ${targetTimeStr} (${diffSecs}s remaining).`);
-      this.addLog('info', `⚡ Mode: ${this.executionMode.toUpperCase()} BLAST | Gas Fee: ${speedLabel} | Lead Compensation: -${this.latencyOffsetMs}ms.`);
-      this.addLog('info', `⏳ Pre-staging transactions in background memory for zero-latency nanosecond trigger...`);
+      this.addLog('info', `⚡ Mode: ${this.executionMode.toUpperCase()} BLAST | Gas: ${speedLabel} | Lead Compensation: -${this.latencyOffsetMs}ms.`);
+      this.addLog('info', `⏳ Live Gas Poller active: automatically syncs RAM transactions if chain gas fluctuates...`);
 
       // Arm background high-resolution worker
       backgroundTimerService.armTimer(startTime, this.latencyOffsetMs);
+
+      // Start live gas monitor
+      this.startGasMonitor(provider);
 
       // Immediately pre-stage and pre-sign all raw transactions ahead of time
       this.preStageTransactions();
@@ -238,12 +252,15 @@ export class AutoMintEngine {
         feeData = await provider.getFeeData();
       } catch (e) {}
 
-      const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
+      const gasParams = this.calculateGasParams(feeData, this.gasSpeed);
+      const rawPrice = feeData?.gasPrice || feeData?.maxFeePerGas || 0n;
+      const liveGwei = parseFloat(ethers.formatUnits(rawPrice, 'gwei'));
+      const liveGweiStr = liveGwei < 0.001 ? liveGwei.toFixed(6) : (liveGwei < 1 ? liveGwei.toFixed(3) : liveGwei.toFixed(2));
       const tipFormatted = gasParams.maxPriorityFeePerGas 
         ? `${ethers.formatUnits(gasParams.maxPriorityFeePerGas, 'gwei')} Gwei Tip`
         : `${ethers.formatUnits(gasParams.gasPrice, 'gwei')} Gwei Price`;
 
-      this.addLog('info', `⛽ [GAS CONFIG: ${this.gasSpeed.toUpperCase()}] Priority: ${tipFormatted}`);
+      this.addLog('info', `⛽ [LIVE ON-CHAIN GAS: ${liveGweiStr} Gwei] Strategy: ${this.gasSpeed.toUpperCase()} -> Priority: ${tipFormatted}`);
 
       // Pre-instantiate signers and fetch nonces in parallel
       const signers = this.wallets.map(w => new ethers.Wallet(w.privateKey, provider));
@@ -331,6 +348,7 @@ export class AutoMintEngine {
     if (!this.isArmed || this.isRunning) return;
 
     this.isArmed = false;
+    this.stopGasMonitor();
     backgroundTimerService.disarmTimer();
 
     this.addLog('info', `⏰ [TRIGGER HIT AT EXACT T=0] Launching Nanosecond Multi-Wallet Execution...`);
@@ -341,6 +359,7 @@ export class AutoMintEngine {
    * Manual Instant Mint Trigger
    */
   forceStartNow({ dropInfo, wallets, targetQuantityPerWallet = 1, chainInput, gasConfig, gasSpeed = 'high', executionMode = 'parallel' }) {
+    this.stopGasMonitor();
     this.dropInfo = dropInfo;
     this.wallets = wallets;
     this.targetQty = targetQuantityPerWallet;
@@ -353,12 +372,13 @@ export class AutoMintEngine {
     this.preSignedTxs = [];
     backgroundTimerService.disarmTimer();
 
-    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST' : (this.gasSpeed === 'normal' ? '⚡ NORMAL' : '🐢 SLOW');
+    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST (2.5x Dynamic Live Boost)' : (this.gasSpeed === 'normal' ? '⚡ NORMAL (+35% Boost)' : '🐢 SLOW (1.0x Live Network)');
     this.addLog('warning', `⚡ Manual Instant Mint triggered by user for ${wallets.length} wallets! Gas: ${speedLabel}`);
     this.executeMintSequence();
   }
 
   stop() {
+    this.stopGasMonitor();
     this.shouldStop = true;
     this.isRunning = false;
     this.isArmed = false;
@@ -411,6 +431,7 @@ export class AutoMintEngine {
   async executeMintSequence() {
     if (this.isRunning) return;
 
+    this.stopGasMonitor();
     this.isRunning = true;
     this.isArmed = false;
     this.notify();
@@ -423,8 +444,19 @@ export class AutoMintEngine {
 
     const provider = Web3Service.getProvider(this.selectedChain);
 
+    // Fetch live on-chain gas at this exact second
+    let currentLiveFee = null;
+    try {
+      currentLiveFee = await provider.getFeeData();
+    } catch (e) {}
+
+    const rawLiveGas = currentLiveFee?.gasPrice || currentLiveFee?.maxFeePerGas || 0n;
+    const liveGasGweiFloat = parseFloat(ethers.formatUnits(rawLiveGas, 'gwei'));
+    const liveGasDisplay = liveGasGweiFloat < 0.001 ? liveGasGweiFloat.toFixed(6) : (liveGasGweiFloat < 1 ? liveGasGweiFloat.toFixed(3) : liveGasGweiFloat.toFixed(2));
+
     this.addLog('info', `==================================================`);
     this.addLog('info', `🚀 [NANOSECOND TRIGGER ENGAGED] Firing ${this.wallets.length} Wallets on ${this.selectedChain.name}`);
+    this.addLog('info', `⛽ [LIVE ON-CHAIN GAS AT MINT] ${liveGasDisplay} Gwei | Speed: ${this.gasSpeed.toUpperCase()}`);
     this.addLog('info', `🎯 Contract: ${this.dropInfo.contractAddress} | Mode: ${this.executionMode.toUpperCase()}`);
 
     // 1. Initial On-Chain Supply Availability Check

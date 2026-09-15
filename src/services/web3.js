@@ -26,6 +26,25 @@ export const Web3Service = {
   },
 
   /**
+   * Fetch real-time live network gas data directly from RPC node (no preset/hardcoded values)
+   */
+  async getLiveGasData(chainInput) {
+    try {
+      const provider = this.getProvider(chainInput);
+      const feeData = await provider.getFeeData();
+      const rawPrice = feeData?.gasPrice || feeData?.maxFeePerGas || 0n;
+      const gweiFloat = parseFloat(ethers.formatUnits(rawPrice, 'gwei'));
+      return {
+        feeData,
+        gweiFloat,
+        gweiFormatted: gweiFloat < 0.001 ? gweiFloat.toFixed(6) : (gweiFloat < 1 ? gweiFloat.toFixed(3) : gweiFloat.toFixed(2)),
+      };
+    } catch (err) {
+      return { feeData: null, gweiFloat: 0, gweiFormatted: '0' };
+    }
+  },
+
+  /**
    * Fetch native token balance (ETH, POL, BNB, AVAX) for single address with full 18-decimal precision
    */
   async getNativeBalance(address, chainInput) {

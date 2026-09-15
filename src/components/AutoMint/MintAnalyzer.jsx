@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { OpenSeaService } from '../../services/openSea';
 import { autoMintEngine } from '../../services/autoMint';
 import { StorageService } from '../../services/storage';
+import { Web3Service } from '../../services/web3';
 import { backgroundTimerService } from '../../services/backgroundWorker';
 import { getChainById } from '../../constants/chains';
 import CountdownTimer from './CountdownTimer';
 import ExecutionLogs from './ExecutionLogs';
-import { Rocket, Search, Sparkles, AlertCircle, ShieldCheck, Zap, Square, Clock, BellRing, CheckCircle2, Layers, Flame, Calendar, Info, Users, Check, Gauge, Cpu } from 'lucide-react';
+import { Rocket, Search, Sparkles, AlertCircle, ShieldCheck, Zap, Square, Clock, BellRing, CheckCircle2, Layers, Flame, Calendar, Info, Users, Check, Gauge, Cpu, Activity } from 'lucide-react';
 
 export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [], onOpenSettings }) {
   const [inputUrl, setInputUrl] = useState('');
@@ -18,6 +19,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
   const [executionMode, setExecutionMode] = useState('parallel'); // 'parallel' or 'sequential'
   const [latencyOffsetMs, setLatencyOffsetMs] = useState(15);
   const [gasSpeed, setGasSpeed] = useState(StorageService.getGasSpeed()); // 'slow' | 'normal' | 'high'
+  const [liveGasGwei, setLiveGasGwei] = useState(null);
   const [selectedStageId, setSelectedStageId] = useState('');
   const [customDateTime, setCustomDateTime] = useState('');
   const [botState, setBotState] = useState({ isRunning: false, isArmed: false, isPreSigned: false, isPreStaging: false, logs: [] });
@@ -49,6 +51,27 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
 
     return () => unsubscribe();
   }, []);
+
+  // Poll real-time live on-chain gas from RPC node (changes dynamically)
+  useEffect(() => {
+    let isMounted = true;
+    const fetchGas = async () => {
+      if (!selectedChain) return;
+      try {
+        const gasData = await Web3Service.getLiveGasData(selectedChain);
+        if (isMounted && gasData && gasData.gweiFloat !== undefined) {
+          setLiveGasGwei(gasData.gweiFloat);
+        }
+      } catch (e) {}
+    };
+
+    fetchGas();
+    const interval = setInterval(fetchGas, 3500);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [selectedChain]);
 
   // If activeWalletCount is not set or greater than wallets length, default to all wallets
   const effectiveWalletsToUse = () => {
@@ -196,6 +219,14 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
   const handleSetGasSpeed = (speed) => {
     setGasSpeed(speed);
     StorageService.saveGasSpeed(speed);
+  };
+
+  const formatGasDisplay = (gweiVal) => {
+    if (gweiVal === null || gweiVal === undefined || isNaN(gweiVal)) return '...';
+    if (gweiVal < 0.0001) return gweiVal.toFixed(6);
+    if (gweiVal < 0.01) return gweiVal.toFixed(4);
+    if (gweiVal < 1) return gweiVal.toFixed(3);
+    return gweiVal.toFixed(2);
   };
 
   const currentActiveStage = dropInfo?.currentStage || (dropInfo?.stages && dropInfo.stages.find(s => s.status === 'LIVE')) || dropInfo?.stages?.[0];
@@ -621,22 +652,25 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                 </div>
               </div>
 
-              {/* Mint Gas Fee & Priority Speed Selector */}
+              {/* Mint Gas Fee & Dynamic Speed Selector (100% Live On-Chain, Zero Preset) */}
               <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-1.5">
                     <Flame size={15} className={gasSpeed === 'high' ? 'text-amber-400 animate-pulse' : 'text-cyan-400'} />
-                    Mint Gas Fee Priority:
-                  </span>
-                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
-                    gasSpeed === 'high'
-                      ? 'bg-amber-950 text-amber-300 border border-amber-600'
-                      : gasSpeed === 'normal'
-                      ? 'bg-cyan-950 text-cyan-300 border border-cyan-700'
-                      : 'bg-slate-900 text-slate-400 border border-slate-800'
-                  }`}>
-                    {gasSpeed === 'high' ? '🚀 High / Fast (Priority)' : gasSpeed === 'normal' ? '⚡ Normal' : '🐢 Slow'}
-                  </span>
+                    <span className="text-xs font-semibold text-white">Mint Gas Fee Strategy:</span>
+                  </div>
+
+                  {/* Real-Time Live On-Chain Gas Monitor Badge */}
+                  <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-950/80 border border-emerald-700/80 text-[11px] font-mono shadow-sm">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span className="text-slate-300">Live {selectedChain?.shortName || selectedChain?.name || 'Chain'}:</span>
+                    <strong className="text-emerald-300 font-bold">
+                      {formatGasDisplay(liveGasGwei)} Gwei
+                    </strong>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
@@ -651,10 +685,12 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                     }`}
                   >
                     <div className="flex items-center gap-1 text-xs font-bold text-slate-300">
-                      <span>🐢 Slow</span>
+                      <span>🐢 Slow (1.0x)</span>
                     </div>
-                    <div className="text-[10px] text-slate-400 mt-1 font-mono">1.0 Gwei Tip</div>
-                    <p className="text-[9px] text-slate-500 mt-0.5 leading-tight">Standard fee, normal queue</p>
+                    <div className="text-[10px] text-slate-300 mt-1 font-mono font-semibold">
+                      ~{liveGasGwei !== null ? formatGasDisplay(liveGasGwei * 1.0) : '...'} Gwei
+                    </div>
+                    <p className="text-[9px] text-slate-500 mt-0.5 leading-tight">Standard fee at mint</p>
                   </button>
 
                   {/* Normal */}
@@ -668,10 +704,12 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                     }`}
                   >
                     <div className="flex items-center gap-1 text-xs font-bold text-cyan-300">
-                      <span>⚡ Normal</span>
+                      <span>⚡ Normal (1.35x)</span>
                     </div>
-                    <div className="text-[10px] text-cyan-400 mt-1 font-mono">3.0 Gwei Tip</div>
-                    <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">1.4x base buffer + fast tip</p>
+                    <div className="text-[10px] text-cyan-300 mt-1 font-mono font-semibold">
+                      ~{liveGasGwei !== null ? formatGasDisplay(liveGasGwei * 1.35) : '...'} Gwei
+                    </div>
+                    <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">+35% boost over live</p>
                   </button>
 
                   {/* High / Fast */}
@@ -685,11 +723,13 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-amber-300">🚀 High / Fast</span>
+                      <span className="text-xs font-bold text-amber-300">🚀 High (2.5x)</span>
                       <span className="text-[8px] bg-amber-500/20 text-amber-300 px-1 rounded font-bold">TOP</span>
                     </div>
-                    <div className="text-[10px] text-amber-300 mt-1 font-mono font-bold">12.0 Gwei Tip</div>
-                    <p className="text-[9px] text-amber-200/80 mt-0.5 leading-tight">2.5x base buffer, instant mine</p>
+                    <div className="text-[10px] text-amber-300 mt-1 font-mono font-bold">
+                      ~{liveGasGwei !== null ? formatGasDisplay(liveGasGwei * 2.5) : '...'} Gwei
+                    </div>
+                    <p className="text-[9px] text-amber-200/80 mt-0.5 leading-tight">Instant priority miner boost</p>
                   </button>
                 </div>
               </div>
