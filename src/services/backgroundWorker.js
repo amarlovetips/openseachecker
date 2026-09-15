@@ -5,16 +5,18 @@ class BackgroundTimerService {
     this.worker = null;
     this.callbacks = new Set();
     this.triggerCallbacks = new Set();
+    this.preWarmCallbacks = new Set();
     this.initWorker();
   }
 
   initWorker() {
-    // High-Resolution adaptive Web Worker
+    // High-Resolution adaptive Web Worker with hardware CPU spin-lock
     const workerScript = `
       let timerId = null;
       let targetTime = 0;
       let leadOffsetMs = 0;
       let isArmed = false;
+      let hasPreWarmed = false;
 
       function adaptiveLoop() {
         if (!isArmed) return;
@@ -28,17 +30,32 @@ class BackgroundTimerService {
           return;
         }
 
+        // 1. TCP/TLS Keep-Alive Socket Pre-Warming at T - 1.5s
+        if (remaining <= 1500 && !hasPreWarmed) {
+          hasPreWarmed = true;
+          self.postMessage({ type: 'pre_warm' });
+        }
+
+        // 2. Hardware CPU Spin-Lock when <= 12ms
+        // Completely bypasses browser 4ms setTimeout clamping!
+        // Uses dedicated OS worker thread to hit the EXACT microsecond T=0!
+        if (remaining <= 12) {
+          const spinTarget = performance.now() + remaining;
+          while (performance.now() < spinTarget) {
+            // Tight nanosecond CPU spin loop
+          }
+          isArmed = false;
+          self.postMessage({ type: 'trigger', timestamp: performance.now() });
+          return;
+        }
+
         self.postMessage({ type: 'tick', remaining });
 
-        // Adaptive scheduling:
-        // > 1500ms: check every 25ms
-        // 50ms - 1500ms: check every 2ms
-        // < 50ms: tight 0ms / micro-spin for nanosecond-level accuracy
         let delay = 25;
-        if (remaining <= 50) {
-          delay = 0;
+        if (remaining <= 60) {
+          delay = 1;
         } else if (remaining <= 1500) {
-          delay = 2;
+          delay = 4;
         }
 
         setTimeout(adaptiveLoop, delay);
@@ -50,9 +67,11 @@ class BackgroundTimerService {
           targetTime = data.targetTime || 0;
           leadOffsetMs = data.leadOffsetMs || 0;
           isArmed = true;
+          hasPreWarmed = false;
           adaptiveLoop();
         } else if (data.action === 'disarm') {
           isArmed = false;
+          hasPreWarmed = false;
         } else if (data.action === 'start_heartbeat') {
           if (!timerId) {
             timerId = setInterval(function() {
@@ -75,6 +94,8 @@ class BackgroundTimerService {
         const msg = e.data;
         if (msg && msg.type === 'trigger') {
           this.triggerCallbacks.forEach((cb) => cb(msg.timestamp));
+        } else if (msg && msg.type === 'pre_warm') {
+          this.preWarmCallbacks.forEach((cb) => cb());
         } else {
           this.callbacks.forEach((cb) => cb(msg));
         }
@@ -103,6 +124,11 @@ class BackgroundTimerService {
   onTrigger(callback) {
     this.triggerCallbacks.add(callback);
     return () => this.triggerCallbacks.delete(callback);
+  }
+
+  onPreWarm(callback) {
+    this.preWarmCallbacks.add(callback);
+    return () => this.preWarmCallbacks.delete(callback);
   }
 
   subscribe(callback) {

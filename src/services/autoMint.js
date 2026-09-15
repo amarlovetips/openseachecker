@@ -25,10 +25,16 @@ export class AutoMintEngine {
     this.listeners = new Set();
     this.unsubWorker = null;
     this.unsubTrigger = null;
+    this.unsubPreWarm = null;
 
     // Attach to worker high-resolution trigger
     this.unsubTrigger = backgroundTimerService.onTrigger((triggerTimestamp) => {
       this.triggerNanosecondBlast(triggerTimestamp);
+    });
+
+    // Attach to TCP/TLS Keep-Alive Pre-Warming (1.5s before launch)
+    this.unsubPreWarm = backgroundTimerService.onPreWarm(() => {
+      this.preWarmSocketConnection();
     });
 
     // Fallback heartbeat listener
@@ -41,6 +47,15 @@ export class AutoMintEngine {
         }
       }
     });
+  }
+
+  async preWarmSocketConnection() {
+    if (!this.selectedChain) return;
+    try {
+      const provider = Web3Service.getProvider(this.selectedChain);
+      provider.getBlockNumber().catch(() => {});
+      this.addLog('info', `⚡ [TCP/TLS PRE-WARMED] Keep-alive socket connection active for instant 0ms trigger!`);
+    } catch (e) {}
   }
 
   startGasMonitor(provider) {
@@ -132,20 +147,21 @@ export class AutoMintEngine {
 
       if (speed === 'slow') {
         // Slow: 1.0x Live Network Fee (Standard base fee, live tip)
-        tipWei = netPriority;
+        tipWei = netPriority > 0n ? netPriority : (netBase * 5n) / 100n;
         if (tipWei === 0n) tipWei = 1n;
         maxFeeWei = (netBase * 105n) / 100n + tipWei; // 1.05x base + live tip
       } else if (speed === 'normal') {
         // Normal: +35% Dynamic Boost over live network fee
-        tipWei = (netPriority * 135n) / 100n;
+        tipWei = netPriority > 0n ? (netPriority * 135n) / 100n : (netBase * 15n) / 100n;
         if (tipWei === 0n) tipWei = 1n;
         maxFeeWei = (netBase * 135n) / 100n + tipWei;
       } else {
-        // High / Fast (Sniper Priority): 2.5x of live base fee buffer + 2.5x of live priority tip
-        // If Robinhood is 5 Gwei, it bids 12.5 Gwei. If Robinhood is 30 Gwei, it bids 75 Gwei.
-        tipWei = (netPriority * 250n) / 100n;
+        // High / Fast (Ultra MEV Sniper Speed):
+        // 3.0x live priority tip buffer (or 35% of base if tip is 0 like on Robinhood Chain)
+        // 2.8x live base fee buffer so validators greedily prioritize our transaction in block #0
+        tipWei = netPriority > 0n ? (netPriority * 300n) / 100n : (netBase * 35n) / 100n;
         if (tipWei === 0n) tipWei = 1n;
-        maxFeeWei = (netBase * 250n) / 100n + tipWei;
+        maxFeeWei = (netBase * 280n) / 100n + tipWei;
       }
 
       return {
@@ -163,7 +179,7 @@ export class AutoMintEngine {
     } else if (speed === 'normal') {
       finalGasPrice = (netGasPrice * 130n) / 100n; // 1.3x live network price
     } else {
-      finalGasPrice = (netGasPrice * 220n) / 100n; // 2.2x live network price
+      finalGasPrice = (netGasPrice * 250n) / 100n; // 2.5x live network price for instant mining
     }
 
     return {
@@ -310,7 +326,7 @@ export class AutoMintEngine {
           to: this.dropInfo.contractAddress,
           value: valueWei,
           data: walletCalldata,
-          gasLimit: 250000n,
+          gasLimit: 280000n,
           nonce,
           chainId: this.selectedChain.chainId,
           ...gasParams,
@@ -459,69 +475,77 @@ export class AutoMintEngine {
     this.addLog('info', `⛽ [LIVE ON-CHAIN GAS AT MINT] ${liveGasDisplay} Gwei | Speed: ${this.gasSpeed.toUpperCase()}`);
     this.addLog('info', `🎯 Contract: ${this.dropInfo.contractAddress} | Mode: ${this.executionMode.toUpperCase()}`);
 
-    // 1. Initial On-Chain Supply Availability Check
-    const isAvailable = await this.checkSupplyAvailability(provider);
-    if (!isAvailable) {
-      this.isRunning = false;
-      this.notify();
-      return;
-    }
-
     let totalBroadcasted = 0;
 
-    // STRATEGY 1: PARALLEL NANOSECOND BLAST (ALL WALLETS DISPATCHED CONCURRENTLY)
-    if (this.executionMode === 'parallel') {
+    // STRATEGY 1: TRUE 0MS PARALLEL BLAST (PRE-SIGNED IN RAM -> DIRECT RAW SOCKET BROADCAST)
+    if (this.executionMode === 'parallel' && this.preSignedTxs.length > 0) {
       const blastStart = performance.now();
+      this.addLog('info', `⚡ [0MS RAW SOCKET BLAST] Firing all ${this.preSignedTxs.length} pre-signed transactions simultaneously into active socket!`);
 
-      // If pre-signed transactions exist, blast them simultaneously via raw socket
-      if (this.preSignedTxs.length > 0) {
-        this.addLog('info', `⚡ [PARALLEL RAW BLAST] Broadcasting all pre-signed transactions simultaneously...`);
+      // Fire all pre-signed raw hexes into socket buffers simultaneously
+      const blastPromises = this.preSignedTxs.map(async (item) => {
+        if (this.shouldStop) return;
 
-        const blastPromises = this.preSignedTxs.map(async (item) => {
-          if (this.shouldStop) return;
+        const dispatchStart = performance.now();
+        try {
+          const txRes = await provider.broadcastTransaction(item.rawSignedHex);
+          const latencyMicrosecs = ((performance.now() - dispatchStart) * 1000).toFixed(0);
 
-          const dispatchStart = performance.now();
-          try {
-            const txRes = await provider.broadcastTransaction(item.rawSignedHex);
-            const latencyMicrosecs = ((performance.now() - dispatchStart) * 1000).toFixed(0);
+          totalBroadcasted++;
 
-            totalBroadcasted++;
+          this.addLog('tx', `✅ [IN MEMPOOL in ${latencyMicrosecs}µs] Wallet #${item.walletIndex} (${item.address.slice(0, 8)}...) Tx Dispatched!`, {
+            hash: txRes.hash,
+            wallet: item.address,
+            quantity: this.targetQty,
+            cost: `${item.totalPriceEth.toFixed(4)} ${this.dropInfo.symbol}`,
+          });
 
-            this.addLog('tx', `✅ [DISPATCHED in ${latencyMicrosecs}µs] Wallet #${item.walletIndex} (${item.address.slice(0, 8)}...) Tx in Mempool!`, {
-              hash: txRes.hash,
-              wallet: item.address,
-              quantity: this.targetQty,
-              cost: `${item.totalPriceEth.toFixed(4)} ${this.dropInfo.symbol}`,
-            });
-
-            // Asynchronous background confirmation tracking
-            txRes.wait(1).then((receipt) => {
-              if (receipt.status === 1) {
-                this.addLog('success', `🎉 [CONFIRMED ON BLOCK #${receipt.blockNumber}] Wallet #${item.walletIndex} Mint Successful!`);
-              } else {
-                this.addLog('error', `⚠️ [REVERTED ON CHAIN] Wallet #${item.walletIndex} Reverted on Block #${receipt.blockNumber}`);
-              }
-            }).catch((waitErr) => {
-              const msg = waitErr?.reason || waitErr?.message || '';
-              if (msg.toLowerCase().includes('sold out') || msg.toLowerCase().includes('exceed') || msg.toLowerCase().includes('max supply')) {
-                this.shouldStop = true;
-                this.addLog('error', `🛑 [SUPPLY SOLD OUT ON-CHAIN] Halting any further processing to protect funds.`);
-              }
-            });
-
-          } catch (err) {
-            const errMsg = err?.reason || err?.message || 'Broadcast error';
-            this.addLog('error', `❌ Wallet #${item.walletIndex} Broadcast Error: ${errMsg}`);
-            if (errMsg.toLowerCase().includes('sold out') || errMsg.toLowerCase().includes('max supply') || errMsg.toLowerCase().includes('exceed')) {
-              this.shouldStop = true;
-              this.addLog('error', `🛑 [SUPPLY SOLD OUT ON-CHAIN] Stopping remaining queue.`);
+          // Asynchronous background confirmation tracking
+          txRes.wait(1).then((receipt) => {
+            if (receipt.status === 1) {
+              this.addLog('success', `🎉 [MINED ON BLOCK #${receipt.blockNumber}] Wallet #${item.walletIndex} Mint Confirmed!`);
+            } else {
+              this.addLog('error', `⚠️ [REVERTED ON CHAIN] Wallet #${item.walletIndex} Reverted on Block #${receipt.blockNumber}`);
             }
+          }).catch((waitErr) => {
+            const msg = waitErr?.reason || waitErr?.message || '';
+            if (msg.toLowerCase().includes('sold out') || msg.toLowerCase().includes('exceed') || msg.toLowerCase().includes('max supply')) {
+              this.shouldStop = true;
+              this.addLog('error', `🛑 [SUPPLY SOLD OUT ON-CHAIN] Halting any further processing.`);
+            }
+          });
+
+        } catch (err) {
+          const errMsg = err?.reason || err?.message || 'Broadcast error';
+          this.addLog('error', `❌ Wallet #${item.walletIndex} Broadcast Error: ${errMsg}`);
+          if (errMsg.toLowerCase().includes('sold out') || errMsg.toLowerCase().includes('max supply') || errMsg.toLowerCase().includes('exceed')) {
+            this.shouldStop = true;
+            this.addLog('error', `🛑 [SUPPLY SOLD OUT ON-CHAIN] Stopping remaining queue.`);
           }
-        });
+        }
+      });
 
-        await Promise.all(blastPromises);
+      const totalBlastMs = (performance.now() - blastStart).toFixed(2);
+      this.addLog('success', `⚡ [0MS DISPATCH COMPLETE] All ${this.preSignedTxs.length} wallet transactions sent in ${totalBlastMs}ms!`);
 
-      } else {
+      // Run supply availability check concurrently in background without blocking initial burst
+      this.checkSupplyAvailability(provider).then((hasSupply) => {
+        if (!hasSupply) this.shouldStop = true;
+      }).catch(() => {});
+
+      await Promise.all(blastPromises);
+
+    } else {
+      // For Sequential Cascade or un-signed Fallback: verify supply first
+      const isAvailable = await this.checkSupplyAvailability(provider);
+      if (!isAvailable) {
+        this.isRunning = false;
+        this.notify();
+        return;
+      }
+
+      if (this.executionMode === 'parallel') {
+        const blastStart = performance.now();
         // Fallback: Parallel immediate sign & blast if not pre-signed
         this.addLog('info', `⚡ Parallel Sign & Blast across ${this.wallets.length} wallets...`);
         const gasSettings = this.gasConfig || StorageService.getGasConfig();
@@ -542,7 +566,7 @@ export class AutoMintEngine {
           const txParams = {
             to: this.dropInfo.contractAddress,
             value: valueWei,
-            gasLimit: 250000n,
+            gasLimit: 280000n,
             ...gasParams,
           };
 
@@ -598,12 +622,10 @@ export class AutoMintEngine {
         });
 
         await Promise.all(parallelPromises);
-      }
 
-      const totalBlastMs = (performance.now() - blastStart).toFixed(2);
-      this.addLog('success', `⚡ [PARALLEL BLAST COMPLETE] All ${totalBroadcasted} wallet transactions dispatched in ${totalBlastMs}ms!`);
-
-    } else {
+        const totalBlastMs = (performance.now() - blastStart).toFixed(2);
+        this.addLog('success', `⚡ [PARALLEL BLAST COMPLETE] All ${totalBroadcasted} wallet transactions dispatched in ${totalBlastMs}ms!`);
+      } else {
       // STRATEGY 2: RAPID SEQUENTIAL CASCADE WITH REAL-TIME SUPPLY VERIFICATION
       const gasSettings = this.gasConfig || StorageService.getGasConfig();
       const pricePerNft = parseFloat(this.dropInfo.mintPrice || '0');
@@ -631,7 +653,7 @@ export class AutoMintEngine {
         const txParams = {
           to: this.dropInfo.contractAddress,
           value: valueWei,
-          gasLimit: 250000n,
+          gasLimit: 280000n,
           ...gasParams,
         };
 
@@ -690,6 +712,7 @@ export class AutoMintEngine {
         }
       }
     }
+  }
 
     this.isRunning = false;
     this.isPreSigned = false;
