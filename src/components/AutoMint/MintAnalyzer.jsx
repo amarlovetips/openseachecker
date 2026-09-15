@@ -17,6 +17,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
   const [activeWalletCount, setActiveWalletCount] = useState(null);
   const [executionMode, setExecutionMode] = useState('parallel'); // 'parallel' or 'sequential'
   const [latencyOffsetMs, setLatencyOffsetMs] = useState(15);
+  const [gasSpeed, setGasSpeed] = useState(StorageService.getGasSpeed()); // 'slow' | 'normal' | 'high'
   const [selectedStageId, setSelectedStageId] = useState('');
   const [customDateTime, setCustomDateTime] = useState('');
   const [botState, setBotState] = useState({ isRunning: false, isArmed: false, isPreSigned: false, isPreStaging: false, logs: [] });
@@ -28,11 +29,13 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
     const savedWalletsCount = StorageService.getActiveWalletsCount();
     const savedMode = StorageService.getExecutionMode();
     const savedOffset = StorageService.getLatencyOffset();
+    const savedGasSpeed = StorageService.getGasSpeed();
 
     if (savedQty) setTargetQty(savedQty);
     if (savedWalletsCount !== null) setActiveWalletCount(savedWalletsCount);
     if (savedMode) setExecutionMode(savedMode);
     if (savedOffset !== null) setLatencyOffsetMs(savedOffset);
+    if (savedGasSpeed) setGasSpeed(savedGasSpeed);
 
     if (savedUrl) {
       setInputUrl(savedUrl);
@@ -132,6 +135,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
       wallets: currentMintWallets,
       targetQuantityPerWallet: targetQty,
       chainInput: selectedChain,
+      gasSpeed,
       executionMode,
       latencyOffsetMs,
     });
@@ -158,6 +162,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
       wallets: currentMintWallets,
       targetQuantityPerWallet: targetQty,
       chainInput: selectedChain,
+      gasSpeed,
       executionMode,
     });
   };
@@ -186,6 +191,11 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
   const handleSetLatencyOffset = (offset) => {
     setLatencyOffsetMs(offset);
     StorageService.saveLatencyOffset(offset);
+  };
+
+  const handleSetGasSpeed = (speed) => {
+    setGasSpeed(speed);
+    StorageService.saveGasSpeed(speed);
   };
 
   const currentActiveStage = dropInfo?.currentStage || (dropInfo?.stages && dropInfo.stages.find(s => s.status === 'LIVE')) || dropInfo?.stages?.[0];
@@ -611,6 +621,79 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                 </div>
               </div>
 
+              {/* Mint Gas Fee & Priority Speed Selector */}
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <Flame size={15} className={gasSpeed === 'high' ? 'text-amber-400 animate-pulse' : 'text-cyan-400'} />
+                    Mint Gas Fee Priority:
+                  </span>
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
+                    gasSpeed === 'high'
+                      ? 'bg-amber-950 text-amber-300 border border-amber-600'
+                      : gasSpeed === 'normal'
+                      ? 'bg-cyan-950 text-cyan-300 border border-cyan-700'
+                      : 'bg-slate-900 text-slate-400 border border-slate-800'
+                  }`}>
+                    {gasSpeed === 'high' ? '🚀 High / Fast (Priority)' : gasSpeed === 'normal' ? '⚡ Normal' : '🐢 Slow'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {/* Slow */}
+                  <button
+                    type="button"
+                    onClick={() => handleSetGasSpeed('slow')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      gasSpeed === 'slow'
+                        ? 'bg-slate-900 border-cyan-400 text-white shadow-md shadow-cyan-950/40'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1 text-xs font-bold text-slate-300">
+                      <span>🐢 Slow</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-1 font-mono">1.0 Gwei Tip</div>
+                    <p className="text-[9px] text-slate-500 mt-0.5 leading-tight">Standard fee, normal queue</p>
+                  </button>
+
+                  {/* Normal */}
+                  <button
+                    type="button"
+                    onClick={() => handleSetGasSpeed('normal')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      gasSpeed === 'normal'
+                        ? 'bg-cyan-950/80 border-cyan-400 text-white shadow-md shadow-cyan-950/40'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1 text-xs font-bold text-cyan-300">
+                      <span>⚡ Normal</span>
+                    </div>
+                    <div className="text-[10px] text-cyan-400 mt-1 font-mono">3.0 Gwei Tip</div>
+                    <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">1.4x base buffer + fast tip</p>
+                  </button>
+
+                  {/* High / Fast */}
+                  <button
+                    type="button"
+                    onClick={() => handleSetGasSpeed('high')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      gasSpeed === 'high'
+                        ? 'bg-gradient-to-br from-amber-950/90 to-rose-950/80 border-amber-400 text-white shadow-lg shadow-amber-950/50'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-amber-300">🚀 High / Fast</span>
+                      <span className="text-[8px] bg-amber-500/20 text-amber-300 px-1 rounded font-bold">TOP</span>
+                    </div>
+                    <div className="text-[10px] text-amber-300 mt-1 font-mono font-bold">12.0 Gwei Tip</div>
+                    <p className="text-[9px] text-amber-200/80 mt-0.5 leading-tight">2.5x base buffer, instant mine</p>
+                  </button>
+                </div>
+              </div>
+
               {/* Quantity Per Wallet */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800">
                 <span className="text-xs font-semibold text-slate-300">Target Mint / Wallet:</span>
@@ -642,11 +725,16 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
                       <Clock size={16} />
                       <span>🛡️ BOT IS ARMED IN 0MS STANDBY MODE</span>
                     </div>
-                    {botState.isPreSigned && (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-extrabold flex items-center gap-1">
-                        <Check size={12} /> RAM PRE-SIGNED
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-600 font-bold uppercase">
+                        FEE: {gasSpeed.toUpperCase()}
                       </span>
-                    )}
+                      {botState.isPreSigned && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-extrabold flex items-center gap-1">
+                          <Check size={12} /> RAM PRE-SIGNED
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <p className="text-[11px] text-slate-300 leading-relaxed">
                     {botState.isPreSigned

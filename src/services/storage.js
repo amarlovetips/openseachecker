@@ -123,6 +123,15 @@ export const StorageService = {
     }
   },
 
+  // Gas Speed Preset ('slow', 'normal', 'high')
+  saveGasSpeed(speed) {
+    localStorage.setItem('opensea_bot_gas_speed', speed);
+  },
+
+  getGasSpeed() {
+    return localStorage.getItem('opensea_bot_gas_speed') || 'high'; // Default to high for ultra-fast minting
+  },
+
   // Gas configuration
   saveGasConfig(config) {
     localStorage.setItem(STORAGE_KEYS.GAS_CONFIG, JSON.stringify(config));
@@ -132,13 +141,13 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.GAS_CONFIG);
       return data ? JSON.parse(data) : {
-        maxFeeGwei: '35',
-        maxPriorityFeeGwei: '3.0',
+        maxFeeGwei: '50',
+        maxPriorityFeeGwei: '5.0',
         gasLimit: '250000',
-        autoSpeed: 'ultra',
+        autoSpeed: 'high',
       };
     } catch (e) {
-      return { maxFeeGwei: '35', maxPriorityFeeGwei: '3.0', gasLimit: '250000', autoSpeed: 'ultra' };
+      return { maxFeeGwei: '50', maxPriorityFeeGwei: '5.0', gasLimit: '250000', autoSpeed: 'high' };
     }
   }
 };

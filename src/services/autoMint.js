@@ -17,6 +17,7 @@ export class AutoMintEngine {
     this.selectedChain = null;
     this.executionMode = 'parallel'; // 'parallel' (nanosecond blast) or 'sequential'
     this.latencyOffsetMs = 15; // Lead time compensation
+    this.gasSpeed = 'high'; // 'slow' | 'normal' | 'high'
     this.preSignedTxs = [];
     this.logs = [];
     this.listeners = new Set();
@@ -53,6 +54,7 @@ export class AutoMintEngine {
       isPreStaging: this.isPreStaging,
       executionMode: this.executionMode,
       latencyOffsetMs: this.latencyOffsetMs,
+      gasSpeed: this.gasSpeed,
       targetStartTime: this.dropInfo?.startTime || 0,
       logs: [...this.logs]
     }));
@@ -78,6 +80,88 @@ export class AutoMintEngine {
   }
 
   /**
+   * Calculate dynamic gas parameters based on network feeData and chosen gasSpeed
+   * Guarantees top-of-block priority when gasSpeed is 'high'
+   */
+  calculateGasParams(feeData, gasSpeed = 'high', customGasConfig = null) {
+    const speed = gasSpeed || this.gasSpeed || StorageService.getGasSpeed() || 'high';
+    const gasSettings = customGasConfig || this.gasConfig || StorageService.getGasConfig();
+
+    const userMaxFeeGwei = parseFloat(gasSettings?.maxFeeGwei) || 0;
+    const userPriorityGwei = parseFloat(gasSettings?.maxPriorityFeeGwei) || 0;
+
+    // Case 1: EIP-1559 network (feeData has maxFeePerGas or maxPriorityFeePerGas)
+    if (feeData && (feeData.maxFeePerGas != null || feeData.maxPriorityFeePerGas != null)) {
+      const netBaseOrMax = feeData.maxFeePerGas || ethers.parseUnits('25', 'gwei');
+      const netPriority = feeData.maxPriorityFeePerGas || ethers.parseUnits('1.5', 'gwei');
+
+      let tipWei;
+      let maxFeeWei;
+
+      if (speed === 'slow') {
+        // Slow: standard tip (min 1.0 Gwei), conservative 1.1x base fee
+        const minTip = ethers.parseUnits('1.0', 'gwei');
+        const calcTip = (netPriority * 9n) / 10n;
+        tipWei = calcTip > minTip ? calcTip : minTip;
+        maxFeeWei = (netBaseOrMax * 11n) / 10n + tipWei;
+      } else if (speed === 'normal') {
+        // Normal: 1.5x tip (min 3.0 Gwei), 1.4x base fee buffer
+        const minTip = ethers.parseUnits('3.0', 'gwei');
+        const calcTip = (netPriority * 15n) / 10n;
+        tipWei = calcTip > minTip ? calcTip : minTip;
+        maxFeeWei = (netBaseOrMax * 14n) / 10n + tipWei;
+      } else {
+        // High / Fast (Sniper Speed): 3.0x tip (min 12.0 Gwei), 2.5x base fee buffer
+        // Guarantees immediate inclusion at top of next block even under severe gas wars
+        const minTip = ethers.parseUnits('12.0', 'gwei');
+        const calcTip = (netPriority * 30n) / 10n;
+        tipWei = calcTip > minTip ? calcTip : minTip;
+        maxFeeWei = (netBaseOrMax * 25n) / 10n + tipWei;
+      }
+
+      // If user provided a higher custom fee in settings, ensure we don't underbid
+      if (userPriorityGwei > 0) {
+        const userTipWei = ethers.parseUnits(String(userPriorityGwei), 'gwei');
+        if (userTipWei > tipWei) tipWei = userTipWei;
+      }
+      if (userMaxFeeGwei > 0) {
+        const userMaxWei = ethers.parseUnits(String(userMaxFeeGwei), 'gwei');
+        if (userMaxWei > maxFeeWei) maxFeeWei = userMaxWei;
+      }
+
+      return {
+        maxFeePerGas: maxFeeWei,
+        maxPriorityFeePerGas: tipWei,
+      };
+    }
+
+    // Case 2: Legacy / gasPrice network (or feeData without 1559)
+    let netGasPrice = feeData?.gasPrice;
+    if (!netGasPrice) {
+      const fallbackGwei = speed === 'slow' ? '25' : speed === 'normal' ? '45' : '90';
+      netGasPrice = ethers.parseUnits(fallbackGwei, 'gwei');
+    }
+
+    let finalGasPrice;
+    if (speed === 'slow') {
+      finalGasPrice = netGasPrice;
+    } else if (speed === 'normal') {
+      finalGasPrice = (netGasPrice * 13n) / 10n; // +30% boost
+    } else {
+      finalGasPrice = (netGasPrice * 22n) / 10n; // +120% boost (2.2x) for high speed
+    }
+
+    if (userMaxFeeGwei > 0) {
+      const userPriceWei = ethers.parseUnits(String(userMaxFeeGwei), 'gwei');
+      if (userPriceWei > finalGasPrice) finalGasPrice = userPriceWei;
+    }
+
+    return {
+      gasPrice: finalGasPrice,
+    };
+  }
+
+  /**
    * Arm the bot with Nanosecond Pre-Sign Pipeline
    */
   async armAutoMint({
@@ -86,6 +170,7 @@ export class AutoMintEngine {
     targetQuantityPerWallet = 1,
     chainInput,
     gasConfig,
+    gasSpeed = 'high',
     executionMode = 'parallel',
     latencyOffsetMs = 15
   }) {
@@ -96,6 +181,7 @@ export class AutoMintEngine {
     this.targetQty = targetQuantityPerWallet;
     this.selectedChain = chainInput;
     this.gasConfig = gasConfig || StorageService.getGasConfig();
+    this.gasSpeed = gasSpeed || StorageService.getGasSpeed() || 'high';
     this.executionMode = executionMode;
     this.latencyOffsetMs = latencyOffsetMs;
     this.isArmed = true;
@@ -107,6 +193,7 @@ export class AutoMintEngine {
 
     const now = Date.now();
     const startTime = dropInfo.startTime || 0;
+    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST (SNIPER TIP)' : (this.gasSpeed === 'normal' ? '⚡ NORMAL' : '🐢 SLOW');
 
     if (startTime > now) {
       const diffMs = startTime - now;
@@ -114,7 +201,7 @@ export class AutoMintEngine {
       const targetTimeStr = new Date(startTime).toLocaleTimeString();
 
       this.addLog('warning', `🛡️ [ARMED IN 0MS STANDBY] Target Launch: ${targetTimeStr} (${diffSecs}s remaining).`);
-      this.addLog('info', `⚡ Mode: ${this.executionMode.toUpperCase()} BLAST | Lead Compensation: -${this.latencyOffsetMs}ms.`);
+      this.addLog('info', `⚡ Mode: ${this.executionMode.toUpperCase()} BLAST | Gas Fee: ${speedLabel} | Lead Compensation: -${this.latencyOffsetMs}ms.`);
       this.addLog('info', `⏳ Pre-staging transactions in background memory for zero-latency nanosecond trigger...`);
 
       // Arm background high-resolution worker
@@ -123,7 +210,7 @@ export class AutoMintEngine {
       // Immediately pre-stage and pre-sign all raw transactions ahead of time
       this.preStageTransactions();
     } else {
-      this.addLog('info', `⚡ Launch time already active! Initiating immediate blast across ${wallets.length} wallets...`);
+      this.addLog('info', `⚡ Launch time already active! Initiating immediate blast across ${wallets.length} wallets (Gas: ${speedLabel})...`);
       this.executeMintSequence();
     }
   }
@@ -145,14 +232,18 @@ export class AutoMintEngine {
       const totalPriceEth = pricePerNft * this.targetQty;
       const valueWei = ethers.parseEther(String(totalPriceEth));
 
-      const maxFeeGwei = gasSettings.maxFeeGwei || '35';
-      const maxPriorityFeeGwei = gasSettings.maxPriorityFeeGwei || '3.0';
-
       // Fetch fee data in advance
       let feeData = null;
       try {
         feeData = await provider.getFeeData();
       } catch (e) {}
+
+      const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
+      const tipFormatted = gasParams.maxPriorityFeePerGas 
+        ? `${ethers.formatUnits(gasParams.maxPriorityFeePerGas, 'gwei')} Gwei Tip`
+        : `${ethers.formatUnits(gasParams.gasPrice, 'gwei')} Gwei Price`;
+
+      this.addLog('info', `⛽ [GAS CONFIG: ${this.gasSpeed.toUpperCase()}] Priority: ${tipFormatted}`);
 
       // Pre-instantiate signers and fetch nonces in parallel
       const signers = this.wallets.map(w => new ethers.Wallet(w.privateKey, provider));
@@ -205,14 +296,8 @@ export class AutoMintEngine {
           gasLimit: 250000n,
           nonce,
           chainId: this.selectedChain.chainId,
+          ...gasParams,
         };
-
-        if (feeData && feeData.maxFeePerGas) {
-          txObj.maxFeePerGas = ethers.parseUnits(String(maxFeeGwei), 'gwei');
-          txObj.maxPriorityFeePerGas = ethers.parseUnits(String(maxPriorityFeeGwei), 'gwei');
-        } else {
-          txObj.gasPrice = feeData?.gasPrice || ethers.parseUnits(String(maxFeeGwei), 'gwei');
-        }
 
         const rawSignedHex = await signer.signTransaction(txObj);
         preSigned.push({
@@ -255,19 +340,21 @@ export class AutoMintEngine {
   /**
    * Manual Instant Mint Trigger
    */
-  forceStartNow({ dropInfo, wallets, targetQuantityPerWallet = 1, chainInput, gasConfig, executionMode = 'parallel' }) {
+  forceStartNow({ dropInfo, wallets, targetQuantityPerWallet = 1, chainInput, gasConfig, gasSpeed = 'high', executionMode = 'parallel' }) {
     this.dropInfo = dropInfo;
     this.wallets = wallets;
     this.targetQty = targetQuantityPerWallet;
     this.selectedChain = chainInput;
     this.gasConfig = gasConfig || StorageService.getGasConfig();
+    this.gasSpeed = gasSpeed || StorageService.getGasSpeed() || 'high';
     this.executionMode = executionMode;
     this.isArmed = false;
     this.shouldStop = false;
     this.preSignedTxs = [];
     backgroundTimerService.disarmTimer();
 
-    this.addLog('warning', `⚡ Manual Instant Mint triggered by user for ${wallets.length} wallets!`);
+    const speedLabel = this.gasSpeed === 'high' ? '🚀 HIGH / FAST' : (this.gasSpeed === 'normal' ? '⚡ NORMAL' : '🐢 SLOW');
+    this.addLog('warning', `⚡ Manual Instant Mint triggered by user for ${wallets.length} wallets! Gas: ${speedLabel}`);
     this.executeMintSequence();
   }
 
@@ -409,11 +496,10 @@ export class AutoMintEngine {
         const pricePerNft = parseFloat(this.dropInfo.mintPrice || '0');
         const totalPriceEth = pricePerNft * this.targetQty;
         const valueWei = ethers.parseEther(String(totalPriceEth));
-        const maxFeeGwei = gasSettings.maxFeeGwei || '35';
-        const maxPriorityFeeGwei = gasSettings.maxPriorityFeeGwei || '3.0';
 
         let feeData = null;
         try { feeData = await provider.getFeeData(); } catch (e) {}
+        const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
 
         const parallelPromises = this.wallets.map(async (walletItem, i) => {
           if (this.shouldStop) return;
@@ -425,14 +511,8 @@ export class AutoMintEngine {
             to: this.dropInfo.contractAddress,
             value: valueWei,
             gasLimit: 250000n,
+            ...gasParams,
           };
-
-          if (feeData && feeData.maxFeePerGas) {
-            txParams.maxFeePerGas = ethers.parseUnits(String(maxFeeGwei), 'gwei');
-            txParams.maxPriorityFeePerGas = ethers.parseUnits(String(maxPriorityFeeGwei), 'gwei');
-          } else {
-            txParams.gasPrice = feeData?.gasPrice || ethers.parseUnits(String(maxFeeGwei), 'gwei');
-          }
 
           try {
             const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
@@ -465,6 +545,8 @@ export class AutoMintEngine {
             tx.wait(1).then((receipt) => {
               if (receipt.status === 1) {
                 this.addLog('success', `🎉 [CONFIRMED ON BLOCK #${receipt.blockNumber}] Wallet #${i + 1} Mint Successful!`);
+              } else {
+                this.addLog('error', `⚠️ [REVERTED ON CHAIN] Wallet #${i + 1} Reverted on Block #${receipt.blockNumber}`);
               }
             }).catch((waitErr) => {
               const msg = waitErr?.reason || waitErr?.message || '';
@@ -495,11 +577,10 @@ export class AutoMintEngine {
       const pricePerNft = parseFloat(this.dropInfo.mintPrice || '0');
       const totalPriceEth = pricePerNft * this.targetQty;
       const valueWei = ethers.parseEther(String(totalPriceEth));
-      const maxFeeGwei = gasSettings.maxFeeGwei || '35';
-      const maxPriorityFeeGwei = gasSettings.maxPriorityFeeGwei || '3.0';
 
       let feeData = null;
       try { feeData = await provider.getFeeData(); } catch (e) {}
+      const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
 
       for (let i = 0; i < this.wallets.length; i++) {
         if (this.shouldStop) break;
@@ -519,14 +600,8 @@ export class AutoMintEngine {
           to: this.dropInfo.contractAddress,
           value: valueWei,
           gasLimit: 250000n,
+          ...gasParams,
         };
-
-        if (feeData && feeData.maxFeePerGas) {
-          txParams.maxFeePerGas = ethers.parseUnits(String(maxFeeGwei), 'gwei');
-          txParams.maxPriorityFeePerGas = ethers.parseUnits(String(maxPriorityFeeGwei), 'gwei');
-        } else {
-          txParams.gasPrice = feeData?.gasPrice || ethers.parseUnits(String(maxFeeGwei), 'gwei');
-        }
 
         try {
           const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
