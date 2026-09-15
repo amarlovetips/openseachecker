@@ -1,7 +1,26 @@
 import React, { useState } from 'react';
-import { Copy, Check, ArrowDownRight, Send, ShieldCheck, Key, RefreshCw } from 'lucide-react';
+import { Copy, Check, ArrowDownRight, Send, Key } from 'lucide-react';
 import { WalletHdService } from '../../services/walletHd';
 import { priceService } from '../../services/price';
+
+function formatCryptoDisplay(val) {
+  if (!val || val === '0' || val === '0.0') return '0.00';
+  const s = String(val).trim();
+  if (!s.includes('.')) return s + '.00';
+  
+  const [intPart, decPart] = s.split('.');
+  const num = parseFloat(val);
+
+  // If value is very small (< 0.001), preserve up to 8 decimals so micro-deposits are clearly visible!
+  if (num < 0.001 && num > 0) {
+    const trimmed = decPart.slice(0, 8).replace(/0+$/, '');
+    return trimmed ? `${intPart}.${trimmed}` : `${intPart}.00`;
+  }
+  
+  // Otherwise show up to 6 decimals without trailing zeros
+  const trimmed = decPart.slice(0, 6).replace(/0+$/, '');
+  return trimmed ? `${intPart}.${trimmed}` : `${intPart}.00`;
+}
 
 export default function WalletCard({
   wallet,
@@ -18,7 +37,8 @@ export default function WalletCard({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isLowGas = parseFloat(balance || '0') < 0.001;
+  const numBal = parseFloat(balance || '0');
+  const isLowGas = numBal <= 0.00001;
 
   return (
     <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition-all shadow-md flex flex-col justify-between gap-3">
@@ -51,11 +71,11 @@ export default function WalletCard({
           </div>
         </div>
 
-        {/* Gas Balance Pill with USD Value */}
-        <div className="text-right font-mono">
+        {/* Gas Balance Pill with USD Value & Full 18-Dec Tooltip */}
+        <div className="text-right font-mono" title={`Exact Balance: ${balance || '0'} ${selectedChain.symbol}`}>
           <span className="text-[10px] text-slate-500 uppercase block font-sans font-semibold">Balance</span>
           <span className={`text-sm font-bold block ${isLowGas ? 'text-amber-400' : 'text-cyan-300'}`}>
-            {balance || '0.0000'} {selectedChain.symbol}
+            {formatCryptoDisplay(balance)} {selectedChain.symbol}
           </span>
           <span className="text-[11px] text-slate-400 block">
             {priceService.formatUsd(balance, selectedChain.symbol)}
@@ -69,7 +89,7 @@ export default function WalletCard({
         <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
           isLowGas ? 'bg-amber-950/60 text-amber-300 border border-amber-800/40' : 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/40'
         }`}>
-          {isLowGas ? '⚠️ Low Gas' : '🟢 Ready'}
+          {isLowGas ? '⚠️ 0 Balance' : '🟢 Ready'}
         </span>
       </div>
 

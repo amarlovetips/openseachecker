@@ -26,26 +26,26 @@ export const Web3Service = {
   },
 
   /**
-   * Fetch native token balance (ETH, POL, BNB, AVAX) for single address
+   * Fetch native token balance (ETH, POL, BNB, AVAX) for single address with full 18-decimal precision
    */
   async getNativeBalance(address, chainInput) {
     try {
       const provider = this.getProvider(chainInput);
       const balanceWei = await provider.getBalance(address);
       const balanceEth = ethers.formatEther(balanceWei);
-      return parseFloat(balanceEth).toFixed(4);
+      return balanceEth; // Preserve exact 18-decimal precision
     } catch (err) {
       console.warn(`Failed to fetch balance for ${address}:`, err);
-      return '0.0000';
+      return '0.0';
     }
   },
 
   /**
-   * Batch fetch balances for multiple addresses in rate-limited chunks
+   * Batch fetch balances for multiple addresses in parallel chunks
    */
   async getBatchBalances(addresses, chainInput) {
     const results = {};
-    const chunkSize = 5;
+    const chunkSize = 10;
 
     for (let i = 0; i < addresses.length; i += chunkSize) {
       const chunk = addresses.slice(i, i + chunkSize);
@@ -55,7 +55,7 @@ export const Web3Service = {
             const balance = await this.getNativeBalance(addr, chainInput);
             results[addr] = balance;
           } catch (e) {
-            results[addr] = '0.0000';
+            results[addr] = '0.0';
           }
         })
       );

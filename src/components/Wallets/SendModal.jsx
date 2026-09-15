@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { X, Send, AlertCircle, CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import { X, Send, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ethers } from 'ethers';
 import { Web3Service } from '../../services/web3';
 import { StorageService } from '../../services/storage';
 import { priceService } from '../../services/price';
@@ -13,7 +14,8 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
 
   if (!isOpen || !wallet) return null;
 
-  const currentBalNum = parseFloat(balance || '0');
+  const currentBalStr = String(balance || '0').trim();
+  const currentBalNum = parseFloat(currentBalStr);
 
   const handleAmountChange = (e) => {
     let val = e.target.value.replace(/[^0-9.]/g, '');
@@ -32,13 +34,14 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
     }
 
     if (percent === 100) {
-      // 100% exact full balance
-      setAmount(String(balance));
+      // 100% exact full 18-decimal balance without any truncation!
+      setAmount(currentBalStr);
+      setError('');
       return;
     }
 
     const calculated = (currentBalNum * (percent / 100));
-    setAmount(parseFloat(calculated.toFixed(6)).toString());
+    setAmount(parseFloat(calculated.toFixed(8)).toString());
     setError('');
   };
 
@@ -47,10 +50,19 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
       setAmount('0');
       return;
     }
-    // Reserve a tiny amount for gas
-    const gasReserve = currentBalNum > 0.002 ? 0.0002 : (currentBalNum > 0.0005 ? 0.00008 : 0);
-    const maxVal = Math.max(0, currentBalNum - gasReserve);
-    setAmount(parseFloat(maxVal.toFixed(6)).toString());
+    try {
+      const balanceWei = ethers.parseEther(currentBalStr);
+      // Small gas reserve for native transfer (21,000 gas * gas price on L2)
+      const reserveWei = ethers.parseUnits('0.000021', 'ether');
+      if (balanceWei > reserveWei) {
+        const sendableWei = balanceWei - reserveWei;
+        setAmount(ethers.formatEther(sendableWei));
+      } else {
+        setAmount(currentBalStr);
+      }
+    } catch (e) {
+      setAmount(currentBalStr);
+    }
     setError('');
   };
 
@@ -64,13 +76,20 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
       return;
     }
 
-    if (!amount || parseFloat(amount) <= 0) {
+    if (!amount || !amount.trim() || parseFloat(amount) <= 0) {
       setError('Amount must be greater than 0.');
       return;
     }
 
-    if (parseFloat(amount) > currentBalNum) {
-      setError(`Insufficient balance. You have ${balance} ${selectedChain.symbol}.`);
+    try {
+      const sendWei = ethers.parseEther(amount.trim());
+      const balWei = ethers.parseEther(currentBalStr);
+      if (sendWei > balWei) {
+        setError(`Insufficient balance. You have ${currentBalStr} ${selectedChain.symbol}.`);
+        return;
+      }
+    } catch (e) {
+      setError('Invalid amount format or decimal precision.');
       return;
     }
 
@@ -112,21 +131,21 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
         <form onSubmit={handleSend} className="p-6 space-y-4">
           
           {/* Source Wallet Info */}
-          <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-            <div>
+          <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <span className="text-[10px] text-slate-500 uppercase font-semibold block">From Wallet</span>
-              <span className="text-xs font-bold text-white">{wallet.label}</span>
+              <span className="text-xs font-bold text-white block truncate">{wallet.label}</span>
               <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
                 {wallet.address.slice(0, 8)}...{wallet.address.slice(-6)}
               </span>
             </div>
-            <div className="text-right font-mono">
+            <div className="text-right font-mono shrink-0">
               <span className="text-[10px] text-slate-500 uppercase font-semibold block">Available</span>
-              <span className="text-xs font-bold text-cyan-300 block">
-                {balance || '0.0000'} {selectedChain.symbol}
+              <span className="text-xs font-bold text-cyan-300 block break-all" title={currentBalStr}>
+                {currentBalStr} {selectedChain.symbol}
               </span>
               <span className="text-[10px] text-emerald-400 block mt-0.5">
-                ≈ {priceService.formatUsd(balance, selectedChain.symbol)}
+                ≈ {priceService.formatUsd(currentBalStr, selectedChain.symbol)}
               </span>
             </div>
           </div>
@@ -175,7 +194,7 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
                   type="button"
                   onClick={handleSetMaxGasSafe}
                   className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60 hover:bg-cyan-900 font-mono font-bold"
-                  title="Max amount reserving small gas"
+                  title="Max amount reserving tiny gas"
                 >
                   Max (Safe)
                 </button>
@@ -183,7 +202,7 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
                   type="button"
                   onClick={() => handleSetPresetPercentage(100)}
                   className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60 hover:bg-emerald-900 font-mono font-bold"
-                  title="100% Full Balance"
+                  title="100% Full 18-decimal Balance"
                 >
                   100%
                 </button>
@@ -194,10 +213,10 @@ export default function SendModal({ isOpen, onClose, wallet, balance, selectedCh
               <input
                 type="text"
                 inputMode="decimal"
-                placeholder="0.0000"
+                placeholder="0.000000000000000000"
                 value={amount}
                 onChange={handleAmountChange}
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-sm font-bold focus:outline-none focus:border-cyan-500 shadow-inner"
+                className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs font-bold focus:outline-none focus:border-cyan-500 shadow-inner"
               />
               <div className="absolute right-3 top-2.5 text-xs text-slate-500 font-mono font-semibold">
                 {selectedChain.symbol}
