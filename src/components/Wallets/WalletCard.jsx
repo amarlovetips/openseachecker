@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Copy, Check, ArrowDownRight, Send, ShieldCheck, Key, RefreshCw } from 'lucide-react';
 import { WalletHdService } from '../../services/walletHd';
+import { priceService } from '../../services/price';
 
 export default function WalletCard({
   wallet,
@@ -50,11 +51,14 @@ export default function WalletCard({
           </div>
         </div>
 
-        {/* Gas Balance Pill */}
+        {/* Gas Balance Pill with USD Value */}
         <div className="text-right font-mono">
           <span className="text-[10px] text-slate-500 uppercase block font-sans font-semibold">Balance</span>
-          <span className={`text-sm font-bold ${isLowGas ? 'text-amber-400' : 'text-cyan-300'}`}>
+          <span className={`text-sm font-bold block ${isLowGas ? 'text-amber-400' : 'text-cyan-300'}`}>
             {balance || '0.0000'} {selectedChain.symbol}
+          </span>
+          <span className="text-[11px] text-slate-400 block">
+            {priceService.formatUsd(balance, selectedChain.symbol)}
           </span>
         </div>
       </div>

@@ -76,18 +76,24 @@ export const Web3Service = {
     const wallet = new ethers.Wallet(privateKey, provider);
     const valueWei = ethers.parseEther(String(amount));
 
+    let feeData = null;
+    try {
+      feeData = await provider.getFeeData();
+    } catch (e) {}
+
     const txRequest = {
-      to: recipient,
+      to: ethers.getAddress(recipient.toLowerCase()),
       value: valueWei,
+      gasLimit: 21000n,
     };
 
-    if (gasConfig) {
-      if (gasConfig.maxFeeGwei) {
-        txRequest.maxFeePerGas = ethers.parseUnits(String(gasConfig.maxFeeGwei), 'gwei');
-      }
-      if (gasConfig.maxPriorityFeeGwei) {
-        txRequest.maxPriorityFeePerGas = ethers.parseUnits(String(gasConfig.maxPriorityFeeGwei), 'gwei');
-      }
+    if (feeData && feeData.maxFeePerGas) {
+      const maxFeeGwei = gasConfig?.maxFeeGwei || '35';
+      const maxPriorityFeeGwei = gasConfig?.maxPriorityFeeGwei || '2.5';
+      txRequest.maxFeePerGas = ethers.parseUnits(String(maxFeeGwei), 'gwei');
+      txRequest.maxPriorityFeePerGas = ethers.parseUnits(String(maxPriorityFeeGwei), 'gwei');
+    } else {
+      txRequest.gasPrice = feeData?.gasPrice || ethers.parseUnits(String(gasConfig?.maxFeeGwei || '35'), 'gwei');
     }
 
     const tx = await wallet.sendTransaction(txRequest);

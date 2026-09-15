@@ -5,6 +5,7 @@ import SendModal from './SendModal';
 import { Web3Service } from '../../services/web3';
 import { StorageService } from '../../services/storage';
 import { WalletHdService } from '../../services/walletHd';
+import { priceService } from '../../services/price';
 import { Wallet, Plus, RefreshCw, Search, ShieldCheck, Download, ArrowUpRight } from 'lucide-react';
 
 export default function WalletHub({ wallets = [], onRefreshWallets, selectedChain, onOpenSettings }) {
@@ -83,9 +84,14 @@ export default function WalletHub({ wallets = [], onRefreshWallets, selectedChai
             <span className="text-[10px] text-slate-500 uppercase block font-sans font-semibold">
               Total Combined Portfolio Balance
             </span>
-            <span className="text-base font-extrabold text-cyan-300">
-              {totalBalanceSum.toFixed(4)} {selectedChain.symbol}
-            </span>
+            <div className="flex items-baseline justify-end gap-2">
+              <span className="text-base font-extrabold text-cyan-300">
+                {totalBalanceSum.toFixed(4)} {selectedChain.symbol}
+              </span>
+              <span className="text-xs font-bold text-emerald-400">
+                (~{priceService.formatUsd(totalBalanceSum, selectedChain.symbol)})
+              </span>
+            </div>
           </div>
 
           <button
