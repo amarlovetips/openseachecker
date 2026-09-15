@@ -55,13 +55,28 @@ export default async function handler(req, res) {
     // 2. Extract Real Contract Address
     let contractAddress = null;
 
-    // Priority A: Contract on the detected chain's CDN
-    if (chainSlug) {
+    // Priority A: Direct NFT item link in OpenSea page: /item/<chain>/<address>/
+    const itemMatch = html.match(/\/item\/([a-z0-9-_]+)\/(0x[a-fA-F0-9]{40})/i);
+    if (itemMatch) {
+      contractAddress = itemMatch[2];
+      if (!chainSlug || chainSlug === 'ethereum') {
+        chainSlug = itemMatch[1].toLowerCase();
+      }
+    }
+
+    // Priority B: Direct /assets/<chain>/<address>/
+    if (!contractAddress) {
+      const assetMatch = html.match(/\/assets\/([a-z0-9-_]+)\/(0x[a-fA-F0-9]{40})/i);
+      if (assetMatch) contractAddress = assetMatch[2];
+    }
+
+    // Priority C: Contract on the detected chain's CDN
+    if (!contractAddress && chainSlug) {
       const chainCdnMatch = html.match(new RegExp(`seadn\\.io\\/${chainSlug}\\/(0x[a-fA-F0-9]{40})`, 'i'));
       if (chainCdnMatch) contractAddress = chainCdnMatch[1];
     }
 
-    // Priority B: Drop contractAddress
+    // Priority D: Drop contractAddress
     if (!contractAddress) {
       const dropContractMatch = html.match(/"contractAddress":"(0x[a-fA-F0-9]{40})"/i);
       if (dropContractMatch) contractAddress = dropContractMatch[1];
