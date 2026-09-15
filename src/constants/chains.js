@@ -332,16 +332,16 @@ export const SUPPORTED_CHAINS = [
   // 23. Robinhood Chain
   {
     id: 'robinhood',
-    chainId: 4001,
+    chainId: 4663,
     name: 'Robinhood Chain',
     shortName: 'Robinhood',
     symbol: 'ETH',
     decimals: 18,
     icon: '🏹',
     color: '#00C805',
-    rpcUrl: 'https://robinhood-chain-rpc.com',
-    explorerUrl: 'https://explorer.robinhood.com',
-    category: 'Arbitrum Orbit',
+    rpcUrl: 'https://rpc.mainnet.chain.robinhood.com',
+    explorerUrl: 'https://robinhoodchain.blockscout.com',
+    category: 'Arbitrum Orbit L2',
     openseaSupported: true,
   },
   // 24. BNB Smart Chain
