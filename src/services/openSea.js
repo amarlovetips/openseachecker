@@ -3,7 +3,7 @@ import { getChainById, SUPPORTED_CHAINS } from '../constants/chains';
 import { Web3Service } from './web3';
 
 export const OpenSeaService = {
-  SEADROP_V1_ADDRESS: '0x00005EA00Ac477B1030CE7850649663527901b0c',
+  SEADROP_V1_ADDRESS: '0x00005EA00aC477B1030cE7850649663527901b0c',
 
   erc721DropAbi: [
     "function name() public view returns (string)",

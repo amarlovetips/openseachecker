@@ -284,21 +284,11 @@ export class AutoMintEngine {
         signers.map(s => provider.getTransactionCount(s.address, 'pending').catch(() => 0))
       );
 
-      // Determine contract calldata
-      const seaDropInterface = new ethers.Interface(this.mintAbiSignatures);
-      let targetCalldata = null;
+      // Resolve drop protocol and correct transaction destination (SeaDrop vs Standalone)
+      const dropProtocol = await this.resolveDropProtocol(this.dropInfo.contractAddress, provider, this.selectedChain.chainId);
+      this.addLog('info', `🎯 Protocol: ${dropProtocol.type.toUpperCase()} | Target: ${dropProtocol.targetAddress} (NFT: ${this.dropInfo.contractAddress.slice(0, 10)}...)`);
 
-      // Try encoding SeaDrop mintPublic or standard mint
-      try {
-        targetCalldata = seaDropInterface.encodeFunctionData("mintPublic", [
-          this.dropInfo.contractAddress,
-          ethers.ZeroAddress,
-          signers[0].address,
-          this.targetQty
-        ]);
-      } catch (e) {
-        targetCalldata = seaDropInterface.encodeFunctionData("mint", [this.targetQty]);
-      }
+      const seaDropInterface = new ethers.Interface(this.mintAbiSignatures);
 
       // Pre-sign all transactions into ready-to-broadcast raw hexes
       const preSigned = [];
@@ -309,21 +299,24 @@ export class AutoMintEngine {
         const walletItem = this.wallets[i];
         const nonce = nonces[i];
 
-        // Specific calldata per wallet (for SeaDrop minterIfNotPayer)
-        let walletCalldata = targetCalldata;
-        try {
+        let walletCalldata;
+        if (dropProtocol.type === 'seadrop') {
           walletCalldata = seaDropInterface.encodeFunctionData("mintPublic", [
             this.dropInfo.contractAddress,
             ethers.ZeroAddress,
             signer.address,
             this.targetQty
           ]);
-        } catch (e) {
-          walletCalldata = targetCalldata;
+        } else {
+          try {
+            walletCalldata = seaDropInterface.encodeFunctionData("mint", [this.targetQty]);
+          } catch (e) {
+            walletCalldata = seaDropInterface.encodeFunctionData("publicMint", [this.targetQty]);
+          }
         }
 
         const txObj = {
-          to: this.dropInfo.contractAddress,
+          to: dropProtocol.targetAddress,
           value: valueWei,
           data: walletCalldata,
           gasLimit: 280000n,
@@ -412,8 +405,56 @@ export class AutoMintEngine {
     "function mintNFT(uint256 quantity) public payable",
     "function claim(address receiver, uint256 quantity, address currency, uint256 pricePerToken, tuple(bytes32[] proof, uint256 quantityLimitPerWallet, uint256 pricePerToken, address currency) allowlistProof, bytes data) public payable",
     "function totalSupply() public view returns (uint256)",
-    "function maxSupply() public view returns (uint256)"
+    "function totalMinted() public view returns (uint256)",
+    "function maxSupply() public view returns (uint256)",
+    "function getAllowedSeaDrop() public view returns (address[])",
+    "function getSeaDrop() public view returns (address)"
   ];
+
+  /**
+   * Resolve Contract Protocol (SeaDrop vs Standard Standalone ERC721)
+   */
+  async resolveDropProtocol(contractAddress, provider, chainId) {
+    if (!ethers.isAddress(contractAddress)) {
+      return { type: 'standard', targetAddress: contractAddress, seaDropAddress: null };
+    }
+
+    // 1. Query contract for SeaDrop integration on-chain
+    try {
+      const contract = new ethers.Contract(contractAddress, this.mintAbiSignatures, provider);
+      try {
+        const allowed = await contract.getAllowedSeaDrop();
+        if (Array.isArray(allowed) && allowed.length > 0 && ethers.isAddress(allowed[0]) && allowed[0] !== ethers.ZeroAddress) {
+          const seadropAddr = ethers.getAddress(allowed[0]);
+          return { type: 'seadrop', targetAddress: seadropAddr, seaDropAddress: seadropAddr };
+        }
+      } catch (e) {}
+
+      try {
+        const single = await contract.getSeaDrop();
+        if (ethers.isAddress(single) && single !== ethers.ZeroAddress) {
+          const seadropAddr = ethers.getAddress(single);
+          return { type: 'seadrop', targetAddress: seadropAddr, seaDropAddress: seadropAddr };
+        }
+      } catch (e) {}
+    } catch (e) {}
+
+    // 2. Check if OpenSea stages indicate SeaDrop
+    const isSeaDrop = this.dropInfo?.stages?.some(s => 
+      (s.__typename && s.__typename.includes('SeaDrop')) ||
+      (s.stageType === 'PUBLIC_SALE' && chainId === 4663)
+    );
+
+    if (isSeaDrop) {
+      const defaultSeaDrop = chainId === 4663 
+        ? '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5' // Robinhood Chain
+        : '0x00005EA00aC477B1030cE7850649663527901b0c'; // Standard SeaDrop v1
+      const seadropAddr = ethers.getAddress(defaultSeaDrop);
+      return { type: 'seadrop', targetAddress: seadropAddr, seaDropAddress: seadropAddr };
+    }
+
+    return { type: 'standard', targetAddress: ethers.getAddress(contractAddress), seaDropAddress: null };
+  }
 
   /**
    * Real-Time Supply Availability Check
@@ -424,7 +465,7 @@ export class AutoMintEngine {
     try {
       const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, provider);
       const [totalRes, maxRes] = await Promise.allSettled([
-        contract.totalSupply(),
+        contract.totalSupply().catch(() => contract.totalMinted()),
         contract.maxSupply()
       ]);
 
@@ -553,6 +594,8 @@ export class AutoMintEngine {
         const totalPriceEth = pricePerNft * this.targetQty;
         const valueWei = ethers.parseEther(String(totalPriceEth));
 
+        const dropProtocol = await this.resolveDropProtocol(this.dropInfo.contractAddress, provider, this.selectedChain.chainId);
+
         let feeData = null;
         try { feeData = await provider.getFeeData(); } catch (e) {}
         const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
@@ -564,25 +607,25 @@ export class AutoMintEngine {
           const dispatchStart = performance.now();
 
           const txParams = {
-            to: this.dropInfo.contractAddress,
+            to: dropProtocol.targetAddress,
             value: valueWei,
             gasLimit: 280000n,
             ...gasParams,
           };
 
           try {
-            const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
             let tx;
-            try {
-              tx = await contract.mint(this.targetQty, txParams);
-            } catch (e1) {
+            if (dropProtocol.type === 'seadrop') {
+              const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
+              tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
+            } else {
+              const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
               try {
-                tx = await contract.publicMint(this.targetQty, txParams);
-              } catch (e2) {
+                tx = await contract.mint(this.targetQty, txParams);
+              } catch (e1) {
                 try {
-                  const seaDrop = new ethers.Contract('0x00005EA00Ac477B1030CE7850649663527901b0c', this.mintAbiSignatures, signer);
-                  tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
-                } catch (e3) {
+                  tx = await contract.publicMint(this.targetQty, txParams);
+                } catch (e2) {
                   tx = await signer.sendTransaction(txParams);
                 }
               }
@@ -632,6 +675,8 @@ export class AutoMintEngine {
       const totalPriceEth = pricePerNft * this.targetQty;
       const valueWei = ethers.parseEther(String(totalPriceEth));
 
+      const dropProtocol = await this.resolveDropProtocol(this.dropInfo.contractAddress, provider, this.selectedChain.chainId);
+
       let feeData = null;
       try { feeData = await provider.getFeeData(); } catch (e) {}
       const gasParams = this.calculateGasParams(feeData, this.gasSpeed, gasSettings);
@@ -651,25 +696,25 @@ export class AutoMintEngine {
         const startTimeMs = performance.now();
 
         const txParams = {
-          to: this.dropInfo.contractAddress,
+          to: dropProtocol.targetAddress,
           value: valueWei,
           gasLimit: 280000n,
           ...gasParams,
         };
 
         try {
-          const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
           let tx;
-          try {
-            tx = await contract.mint(this.targetQty, txParams);
-          } catch (e1) {
+          if (dropProtocol.type === 'seadrop') {
+            const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
+            tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
+          } else {
+            const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
             try {
-              tx = await contract.publicMint(this.targetQty, txParams);
-            } catch (e2) {
+              tx = await contract.mint(this.targetQty, txParams);
+            } catch (e1) {
               try {
-                const seaDrop = new ethers.Contract('0x00005EA00Ac477B1030CE7850649663527901b0c', this.mintAbiSignatures, signer);
-                tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
-              } catch (e3) {
+                tx = await contract.publicMint(this.targetQty, txParams);
+              } catch (e2) {
                 tx = await signer.sendTransaction(txParams);
               }
             }
