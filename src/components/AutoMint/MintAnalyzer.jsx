@@ -45,7 +45,7 @@ export default function MintAnalyzer({ selectedChain, onSelectChain, wallets = [
     });
 
     return () => unsubscribe();
-  }, [selectedChain]);
+  }, []);
 
   // If activeWalletCount is not set or greater than wallets length, default to all wallets
   const effectiveWalletsToUse = () => {

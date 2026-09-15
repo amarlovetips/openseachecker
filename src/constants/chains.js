@@ -438,6 +438,37 @@ export const SUPPORTED_CHAINS = [
 
 export const DEFAULT_CHAIN = SUPPORTED_CHAINS[0]; // Ethereum Mainnet
 
+const CHAIN_ALIASES = {
+  'eth': 'ethereum',
+  'mainnet': 'ethereum',
+  'homestead': 'ethereum',
+  'matic': 'polygon',
+  'polygon_pos': 'polygon',
+  'polygon-pos': 'polygon',
+  'arbitrum_one': 'arbitrum',
+  'arbitrum-one': 'arbitrum',
+  'arbitrum_nova': 'arbitrum',
+  'op': 'optimism',
+  'optimistic': 'optimism',
+  'optimism_mainnet': 'optimism',
+  'op_mainnet': 'optimism',
+  'avalanche_c': 'avalanche',
+  'avalanche-c': 'avalanche',
+  'avax': 'avalanche',
+  'bnb': 'bsc',
+  'binance': 'bsc',
+  'robinhood': 'robinhood',
+  'robinhood_chain': 'robinhood',
+  'robinhood-chain': 'robinhood',
+  'hyperliquid': 'hyperevm',
+  'hyper_evm': 'hyperevm',
+  'b3_network': 'b3',
+  'flow_evm': 'flow',
+  'gunzilla': 'gunz',
+  'sony': 'soneium',
+  'sony_l2': 'soneium',
+};
+
 export function getChainById(chainIdOrSlug) {
   if (!chainIdOrSlug) return DEFAULT_CHAIN;
 
@@ -445,7 +476,8 @@ export function getChainById(chainIdOrSlug) {
     return SUPPORTED_CHAINS.find((c) => c.chainId === chainIdOrSlug) || DEFAULT_CHAIN;
   }
 
-  const query = String(chainIdOrSlug).toLowerCase().trim();
+  const rawQuery = String(chainIdOrSlug).toLowerCase().trim();
+  const query = CHAIN_ALIASES[rawQuery] || rawQuery;
 
   return (
     SUPPORTED_CHAINS.find(

@@ -30,26 +30,71 @@ export default defineConfig({
               });
               const html = await fetchRes.text();
               
-              // 1. Extract Real Contract Address & Chain
-              let contractAddress = null;
-              let chainSlug = 'ethereum';
+              // 1. Extract Real Chain (Accurate GraphQL Relay extraction)
+              let chainSlug = null;
 
-              // Item CDN match: /seadn.io/<chain>/0x<address>/
-              const cdnItemMatch = html.match(/seadn\.io\/([a-z0-9-_]+)\/(0x[a-fA-F0-9]{40})\//i);
-              if (cdnItemMatch) {
-                const detected = cdnItemMatch[1].toLowerCase();
-                if (detected !== 'collection' && detected !== 'profiles') {
-                  chainSlug = detected;
-                  contractAddress = cdnItemMatch[2];
+              // Priority A: OpenSea GraphQL Relay Chain Identifier
+              const relayChainMatch = html.match(/"chain":\{[^}]*"identifier":"([^"]+)"/i);
+              if (relayChainMatch) chainSlug = relayChainMatch[1].toLowerCase();
+
+              // Priority B: Direct chainIdentifier
+              if (!chainSlug) {
+                const identMatch = html.match(/"chainIdentifier":"([^"]+)"/i);
+                if (identMatch) chainSlug = identMatch[1].toLowerCase();
+              }
+
+              // Priority C: Collection chain name
+              if (!chainSlug) {
+                const chainNameMatch = html.match(/"chain":\{[^}]*"name":"([^"]+)"/i);
+                if (chainNameMatch) chainSlug = chainNameMatch[1].toLowerCase();
+              }
+
+              // Priority D: Drop stage or direct chain property
+              if (!chainSlug) {
+                const directChainMatch = html.match(/"chain":"([a-z0-9-_]+)"/i);
+                if (directChainMatch) chainSlug = directChainMatch[1].toLowerCase();
+              }
+
+              // Priority E: CDN image path match
+              if (!chainSlug) {
+                const cdnItemMatch = html.match(/seadn\.io\/([a-z0-9-_]+)\/(0x[a-fA-F0-9]{40})\//i);
+                if (cdnItemMatch && cdnItemMatch[1] !== 'collection' && cdnItemMatch[1] !== 'profiles') {
+                  chainSlug = cdnItemMatch[1].toLowerCase();
                 }
               }
 
-              if (!contractAddress) {
-                const cdnLogoMatch = html.match(/seadn\.io\/collection\/(0x[a-fA-F0-9]{40})\//i);
-                if (cdnLogoMatch) contractAddress = cdnLogoMatch[1];
+              if (!chainSlug) {
+                chainSlug = 'ethereum';
               }
 
-              // Fallback contract lookup from HTML
+              // 2. Extract Real Contract Address
+              let contractAddress = null;
+
+              // Priority A: Contract on the detected chain's CDN
+              if (chainSlug) {
+                const chainCdnMatch = html.match(new RegExp(`seadn\\.io\\/${chainSlug}\\/(0x[a-fA-F0-9]{40})`, 'i'));
+                if (chainCdnMatch) contractAddress = chainCdnMatch[1];
+              }
+
+              // Priority B: Drop contractAddress
+              if (!contractAddress) {
+                const dropContractMatch = html.match(/"contractAddress":"(0x[a-fA-F0-9]{40})"/i);
+                if (dropContractMatch) contractAddress = dropContractMatch[1];
+              }
+
+              // Priority C: Asset Contract address
+              if (!contractAddress) {
+                const assetContractMatch = html.match(/"assetContract":\{[^}]*"address":"(0x[a-fA-F0-9]{40})"/i);
+                if (assetContractMatch) contractAddress = assetContractMatch[1];
+              }
+
+              // Priority D: Collection address
+              if (!contractAddress) {
+                const relayAddrMatch = html.match(/"address":"(0x[a-fA-F0-9]{40})"/i);
+                if (relayAddrMatch) contractAddress = relayAddrMatch[1];
+              }
+
+              // Priority E: Fallback valid hex search
               if (!contractAddress) {
                 const hexMatches = html.match(/0x[a-fA-F0-9]{40}/gi) || [];
                 const validHex = hexMatches.filter(c => 
