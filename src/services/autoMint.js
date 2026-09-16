@@ -441,8 +441,7 @@ export class AutoMintEngine {
 
     // 2. Check if OpenSea stages indicate SeaDrop
     const isSeaDrop = this.dropInfo?.stages?.some(s => 
-      (s.__typename && s.__typename.includes('SeaDrop')) ||
-      (s.stageType === 'PUBLIC_SALE' && chainId === 4663)
+      s.__typename && s.__typename.toLowerCase().includes('seadrop')
     );
 
     if (isSeaDrop) {
@@ -606,8 +605,7 @@ export class AutoMintEngine {
           const signer = new ethers.Wallet(walletItem.privateKey, provider);
           const dispatchStart = performance.now();
 
-          const txParams = {
-            to: dropProtocol.targetAddress,
+          const txOverrides = {
             value: valueWei,
             gasLimit: 280000n,
             ...gasParams,
@@ -616,17 +614,38 @@ export class AutoMintEngine {
           try {
             let tx;
             if (dropProtocol.type === 'seadrop') {
-              const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
-              tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
+              try {
+                const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
+                tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txOverrides);
+              } catch (seadropErr) {
+                // If SeaDrop mintPublic reverted, fallback to direct contract methods
+                const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
+                try {
+                  tx = await contract.mint(this.targetQty, txOverrides);
+                } catch (e1) {
+                  try {
+                    tx = await contract.publicMint(this.targetQty, txOverrides);
+                  } catch (e2) {
+                    throw seadropErr;
+                  }
+                }
+              }
             } else {
               const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
               try {
-                tx = await contract.mint(this.targetQty, txParams);
+                tx = await contract.mint(this.targetQty, txOverrides);
               } catch (e1) {
                 try {
-                  tx = await contract.publicMint(this.targetQty, txParams);
+                  tx = await contract.publicMint(this.targetQty, txOverrides);
                 } catch (e2) {
-                  tx = await signer.sendTransaction(txParams);
+                  try {
+                    tx = await contract.mintNFT(this.targetQty, txOverrides);
+                  } catch (e3) {
+                    tx = await signer.sendTransaction({
+                      to: this.dropInfo.contractAddress,
+                      ...txOverrides,
+                    });
+                  }
                 }
               }
             }
@@ -695,8 +714,7 @@ export class AutoMintEngine {
         const signer = new ethers.Wallet(walletItem.privateKey, provider);
         const startTimeMs = performance.now();
 
-        const txParams = {
-          to: dropProtocol.targetAddress,
+        const txOverrides = {
           value: valueWei,
           gasLimit: 280000n,
           ...gasParams,
@@ -705,17 +723,38 @@ export class AutoMintEngine {
         try {
           let tx;
           if (dropProtocol.type === 'seadrop') {
-            const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
-            tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txParams);
+            try {
+              const seaDrop = new ethers.Contract(dropProtocol.targetAddress, this.mintAbiSignatures, signer);
+              tx = await seaDrop.mintPublic(this.dropInfo.contractAddress, ethers.ZeroAddress, signer.address, this.targetQty, txOverrides);
+            } catch (seadropErr) {
+              // If SeaDrop mintPublic reverted, fallback to direct contract methods
+              const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
+              try {
+                tx = await contract.mint(this.targetQty, txOverrides);
+              } catch (e1) {
+                try {
+                  tx = await contract.publicMint(this.targetQty, txOverrides);
+                } catch (e2) {
+                  throw seadropErr;
+                }
+              }
+            }
           } else {
             const contract = new ethers.Contract(this.dropInfo.contractAddress, this.mintAbiSignatures, signer);
             try {
-              tx = await contract.mint(this.targetQty, txParams);
+              tx = await contract.mint(this.targetQty, txOverrides);
             } catch (e1) {
               try {
-                tx = await contract.publicMint(this.targetQty, txParams);
+                tx = await contract.publicMint(this.targetQty, txOverrides);
               } catch (e2) {
-                tx = await signer.sendTransaction(txParams);
+                try {
+                  tx = await contract.mintNFT(this.targetQty, txOverrides);
+                } catch (e3) {
+                  tx = await signer.sendTransaction({
+                    to: this.dropInfo.contractAddress,
+                    ...txOverrides,
+                  });
+                }
               }
             }
           }
